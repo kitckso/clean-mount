@@ -236,7 +236,6 @@ All subcommands accept these options:
 
 | Flag                    | Description                                                       |
 | ----------------------- | ----------------------------------------------------------------- |
-
 | `--allow-other`         | Allow other users to access the mount                             |
 | `--allow-root`          | Allow root to access the mount                                    |
 | `--default-permissions` | Let kernel enforce permission checks                              |
