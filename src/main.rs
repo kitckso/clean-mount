@@ -4,9 +4,16 @@ use fuser::{BackgroundSession, Config, MountOption, SessionACL};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 use tracing_subscriber::EnvFilter;
+
+static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_sigint(_: i32) {
+    SIGINT_RECEIVED.store(true, Ordering::SeqCst);
+}
 
 mod cli;
 mod fs;
@@ -23,6 +30,12 @@ fn main() -> Result<()> {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
+
+    unsafe {
+        let handler = handle_sigint as extern "C" fn(i32) as usize;
+        libc::signal(libc::SIGINT, handler);
+        libc::signal(libc::SIGTERM, handler);
+    }
 
     let cli = Cli::parse();
 
@@ -100,7 +113,7 @@ fn acl_from_opts(opts: &CommonOpts) -> SessionACL {
         }
         SessionACL::All
     } else {
-        SessionACL::RootAndOwner
+        SessionACL::Owner
     }
 }
 
@@ -119,7 +132,6 @@ fn build_config(source: &Path, opts: &CommonOpts) -> Config {
     let mut mount_options = vec![
         MountOption::RO,
         MountOption::FSName(format!("clean-mount:{}", source.display())),
-        MountOption::AutoUnmount,
     ];
 
     if opts.default_permissions {
@@ -176,7 +188,11 @@ fn mount_blocking(source: PathBuf, opts: &CommonOpts, mountpoint: &Path) -> Resu
         "mounting read-only gitignore-filtered FUSE filesystem"
     );
 
-    fuser::mount(fs, mountpoint, &config).context("FUSE mount failed")?;
+    let _session = fuser::spawn_mount(fs, mountpoint, &config).context("FUSE mount failed")?;
+
+    while !SIGINT_RECEIVED.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     tracing::info!("filesystem unmounted");
     Ok(())
@@ -273,10 +289,11 @@ fn cmd_open(source: PathBuf, opts: &CommonOpts) -> Result<()> {
 
     open_file_manager(&mount_path);
 
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        // Process will exit on SIGINT; auto_unmount cleans up
+    while !SIGINT_RECEIVED.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100));
     }
+
+    Ok(())
 }
 
 fn open_file_manager(path: &Path) {
