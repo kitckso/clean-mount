@@ -1,0 +1,14 @@
+[book]
+title = "clean-mount"
+authors = ["Kit"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[preprocessor.links]
+
+[output.html]
+git-repository-url = "https://github.com/kitckso/clean-mount"
+edit-url-template = "https://github.com/kitckso/clean-mount/edit/main/docs/src/{path}"
