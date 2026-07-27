@@ -1,0 +1,24 @@
+{
+  "name": "clean-mount (Rust + FUSE)",
+  "image": "mcr.microsoft.com/devcontainers/rust:1",
+  "runArgs": [
+    "--cap-add=SYS_ADMIN",
+    "--device=/dev/fuse"
+  ],
+  "onCreateCommand": "sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config fuse3",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates"
+      ],
+      "settings": {
+        "rust-analyzer.checkOnSave.command": "clippy",
+        "rust-analyzer.inlayHints.bindingModeHints.enable": true
+      }
+    }
+  },
+  "remoteUser": "vscode"
+}
