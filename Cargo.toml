@@ -1,0 +1,26 @@
+[package]
+name = "clean-mount"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/kitckso/clean-mount"
+homepage = "https://github.com/kitckso/clean-mount"
+description = "Read-only FUSE mirror that hides files matched by .gitignore rules"
+
+keywords = ["fuse", "gitignore", "filesystem", "filter"]
+categories = ["filesystem"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+fuser = "0.18"
+ignore = "0.4"
+libc = "0.2"
+tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
