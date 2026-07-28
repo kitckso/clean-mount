@@ -5,7 +5,7 @@
 **A read-only FUSE filesystem that mirrors a directory while hiding files matched by `.gitignore`.**
 
 [![CI](https://github.com/kitckso/clean-mount/actions/workflows/ci.yml/badge.svg)](https://github.com/kitckso/clean-mount/actions/workflows/ci.yml)
-[![Crates.io](https://img.shields.io/badge/crates.io-unpublished-lightgrey.svg)](https://crates.io/crates/clean-mount)
+[![Crates.io](https://img.shields.io/badge/crates/v/clean-mount)](https://crates.io/crates/clean-mount)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.88+-dea584.svg)](https://www.rust-lang.org)
 
