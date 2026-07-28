@@ -371,9 +371,7 @@ fn list_tree(
     size: &mut u64,
     seen: &mut HashSet<(u64, u64)>,
 ) -> Result<()> {
-    let mut entries: Vec<_> = std::fs::read_dir(abs_dir)?
-        .filter_map(|e| e.ok())
-        .collect();
+    let mut entries: Vec<_> = std::fs::read_dir(abs_dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
 
     for entry in &entries {
