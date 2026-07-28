@@ -313,9 +313,6 @@ docker run --rm -it \
 >
 > The primary use of the Docker image is building and testing in CI/CD pipelines.
 
-> **Tip:** The `sleep 1` in the use case examples waits for the mount to be ready.
-> Increase this value on slower machines.
-
 ## Development
 
 ### Prerequisites (for building from source)
