@@ -6,15 +6,25 @@ on:
 
 jobs:
   publish:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
 
     steps:
       - uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libfuse3-dev pkg-config
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            libfuse3-dev \
+            pkg-config \
+            ca-certificates
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
 
       - name: Publish to crates.io
         run: cargo publish
@@ -23,18 +33,30 @@ jobs:
 
   create-release:
     needs: publish
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
     permissions:
       contents: write
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build release binary
+      - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libfuse3-dev pkg-config
-          cargo build --release
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            libfuse3-dev \
+            pkg-config \
+            ca-certificates
+
+      - name: Setup Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Build release binary
+        run: cargo build --release
 
       - name: Upload binary
         uses: softprops/action-gh-release@v2
