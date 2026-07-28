@@ -304,7 +304,38 @@ fn open_file_manager(path: &Path) {
     let _ = Command::new("xdg-open").arg(path).status();
 }
 
+fn mount_and_spawn(
+    source: &Path,
+    opts: &CommonOpts,
+    mountpoint: &Path,
+) -> Result<BackgroundSession> {
+    let fs = build_fs(source, opts)?;
+    let config = build_config(source, opts);
+
+    fuser::spawn_mount(fs, mountpoint, &config).context("FUSE mount failed")
+}
+
 const PRINT_LIMIT: u64 = 2000;
+
+struct ListCtx {
+    shown: u64,
+    printed: u64,
+    ignored: u64,
+    size: u64,
+    seen: HashSet<(u64, u64)>,
+}
+
+impl ListCtx {
+    fn new() -> Self {
+        Self {
+            shown: 0,
+            printed: 0,
+            ignored: 0,
+            size: 0,
+            seen: HashSet::new(),
+        }
+    }
+}
 
 fn cmd_list(source: PathBuf, opts: &CommonOpts) -> Result<()> {
     let source = validate_source(&source)?;
@@ -316,47 +347,33 @@ fn cmd_list(source: PathBuf, opts: &CommonOpts) -> Result<()> {
     )
     .context("failed to initialize ignore matcher")?;
 
-    let mut shown = 0u64;
-    let mut printed = 0u64;
-    let mut ignored = 0u64;
-    let mut size = 0u64;
-    let mut seen = HashSet::new();
+    let mut ctx = ListCtx::new();
 
-    list_tree(
-        &source,
-        Path::new(""),
-        &matcher,
-        "",
-        &mut shown,
-        &mut printed,
-        &mut ignored,
-        &mut size,
-        &mut seen,
-    )?;
+    list_tree(&source, Path::new(""), &matcher, "", &mut ctx)?;
 
-    if printed < shown {
+    if ctx.printed < ctx.shown {
         println!(
             "{} files ({} ignored, {} total, {} printed)",
-            shown,
-            ignored,
-            format_size(size),
-            printed,
+            ctx.shown,
+            ctx.ignored,
+            format_size(ctx.size),
+            ctx.printed,
         );
     } else {
         println!(
             "{} files ({} ignored, {} total)",
-            shown,
-            ignored,
-            format_size(size),
+            ctx.shown,
+            ctx.ignored,
+            format_size(ctx.size),
         );
     }
 
     Ok(())
 }
 
-fn add_size(md: &std::fs::Metadata, total: &mut u64, seen: &mut HashSet<(u64, u64)>) {
+fn add_size(md: &std::fs::Metadata, seen: &mut HashSet<(u64, u64)>, total: &mut u64) {
     if seen.insert((md.dev(), md.ino())) {
-        *total += md.blocks().max(1) as u64 * 512;
+        *total += md.blocks().max(1) * 512;
     }
 }
 
@@ -365,11 +382,7 @@ fn list_tree(
     rel: &Path,
     matcher: &IgnoreMatcher,
     indent: &str,
-    shown: &mut u64,
-    printed: &mut u64,
-    ignored: &mut u64,
-    size: &mut u64,
-    seen: &mut HashSet<(u64, u64)>,
+    ctx: &mut ListCtx,
 ) -> Result<()> {
     let mut entries: Vec<_> = std::fs::read_dir(abs_dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
@@ -387,31 +400,23 @@ fn list_tree(
 
         if matcher.is_ignored(&child_rel, Some(ft)) {
             if is_dir {
-                count_ignored(&entry.path(), ignored)?;
+                count_ignored(&entry.path(), &mut ctx.ignored)?;
             } else {
-                *ignored += 1;
+                ctx.ignored += 1;
             }
             continue;
         }
 
-        if *printed >= PRINT_LIMIT {
+        if ctx.printed >= PRINT_LIMIT {
             if is_dir {
                 if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                    add_size(&md, size, seen);
+                    add_size(&md, &mut ctx.seen, &mut ctx.size);
                 }
-                count_remaining(
-                    &entry.path(),
-                    &child_rel,
-                    matcher,
-                    shown,
-                    ignored,
-                    size,
-                    seen,
-                )?;
+                count_remaining(&entry.path(), &child_rel, matcher, ctx)?;
             } else {
-                *shown += 1;
+                ctx.shown += 1;
                 if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                    add_size(&md, size, seen);
+                    add_size(&md, &mut ctx.seen, &mut ctx.size);
                 }
             }
             continue;
@@ -420,26 +425,22 @@ fn list_tree(
         if is_dir {
             println!("{}{}/", indent, name.to_string_lossy());
             if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                add_size(&md, size, seen);
+                add_size(&md, &mut ctx.seen, &mut ctx.size);
             }
             list_tree(
                 &entry.path(),
                 &child_rel,
                 matcher,
                 &format!("{}  ", indent),
-                shown,
-                printed,
-                ignored,
-                size,
-                seen,
+                ctx,
             )?;
         } else {
-            *shown += 1;
-            *printed += 1;
+            ctx.shown += 1;
+            ctx.printed += 1;
             let suffix = if is_symlink { "@" } else { "" };
             println!("{}{}{}", indent, name.to_string_lossy(), suffix);
             if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                add_size(&md, size, seen);
+                add_size(&md, &mut ctx.seen, &mut ctx.size);
             }
         }
     }
@@ -451,10 +452,7 @@ fn count_remaining(
     abs_dir: &Path,
     rel: &Path,
     matcher: &IgnoreMatcher,
-    shown: &mut u64,
-    ignored: &mut u64,
-    size: &mut u64,
-    seen: &mut HashSet<(u64, u64)>,
+    ctx: &mut ListCtx,
 ) -> Result<()> {
     for entry in std::fs::read_dir(abs_dir)? {
         let entry = entry?;
@@ -469,27 +467,19 @@ fn count_remaining(
 
         if matcher.is_ignored(&child_rel, Some(ft)) {
             if is_dir {
-                count_ignored(&entry.path(), ignored)?;
+                count_ignored(&entry.path(), &mut ctx.ignored)?;
             } else {
-                *ignored += 1;
+                ctx.ignored += 1;
             }
         } else if is_dir {
             if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                add_size(&md, size, seen);
+                add_size(&md, &mut ctx.seen, &mut ctx.size);
             }
-            count_remaining(
-                &entry.path(),
-                &child_rel,
-                matcher,
-                shown,
-                ignored,
-                size,
-                seen,
-            )?;
+            count_remaining(&entry.path(), &child_rel, matcher, ctx)?;
         } else {
-            *shown += 1;
+            ctx.shown += 1;
             if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                add_size(&md, size, seen);
+                add_size(&md, &mut ctx.seen, &mut ctx.size);
             }
         }
     }
@@ -523,15 +513,4 @@ fn format_size(bytes: u64) -> String {
     } else {
         format!("{} B", bytes)
     }
-}
-
-fn mount_and_spawn(
-    source: &Path,
-    opts: &CommonOpts,
-    mountpoint: &Path,
-) -> Result<BackgroundSession> {
-    let fs = build_fs(source, opts)?;
-    let config = build_config(source, opts);
-
-    fuser::spawn_mount(fs, mountpoint, &config).context("FUSE mount failed")
 }
