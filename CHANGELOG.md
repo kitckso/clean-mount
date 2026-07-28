@@ -5,13 +5,14 @@
 ### Added
 
 - `list` subcommand — dry-run / preview mode that shows the filtered view without mounting, including a tree of visible files and summary stats.
+- CHANGELOG.md.
 
 ### Changed
 
-- Summary message format in `list` output to use "files" and "ignored" terminology.
-- Deploy-docs workflow now only triggers on pushes to `docs/**`, `book.toml`, or the workflow file itself.
-- Deploy-docs workflow now uses `peaceiris/actions-mdbook@v2` instead of `cargo install mdbook`.
-- Release workflow builds on `ubuntu-20.04` for improved binary backward compatibility.
+- Deploy-docs workflow: filter to docs-only paths, use `peaceiris/actions-mdbook@v2`.
+- Release workflow: `ubuntu-latest` with `ubuntu:20.04` container for backward-compatible binaries; install Rust via `actions-rust-lang/setup-rust-toolchain`.
+- CI workflow: bump `actions/checkout` to v5, `actions/cache` to v5 (Node.js 24 runtime).
+- Remove stale `sleep 1` tip from README.
 
 ## [0.1.0] - 2026-07-27
 
