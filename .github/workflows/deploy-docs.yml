@@ -3,6 +3,10 @@ name: Deploy docs
 on:
   push:
     branches: ["main"]
+    paths:
+      - 'docs/**'
+      - 'book.toml'
+      - '.github/workflows/deploy-docs.yml'
 
 permissions:
   contents: read
@@ -18,8 +22,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install mdbook
-        run: cargo install mdbook
+      - name: Setup mdBook
+        uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: 'latest'
       - name: Build book
         run: mdbook build docs
       - name: Upload artifact
