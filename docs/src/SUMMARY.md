@@ -5,6 +5,7 @@
 - [Subcommands](subcommands.md)
   - [mount](subcommands/mount.md)
   - [cp](subcommands/cp.md)
+  - [list](subcommands/list.md)
   - [exec](subcommands/exec.md)
   - [open](subcommands/open.md)
 - [Use Cases](use-cases.md)

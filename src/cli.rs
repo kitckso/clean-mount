@@ -92,6 +92,14 @@ pub enum Commands {
         opts: CommonOpts,
     },
 
+    /// List the filtered view without mounting (dry-run / preview).
+    /// Shows what the filtered view would contain, with summary stats.
+    List {
+        source: PathBuf,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+
     /// Execute a command with the filtered view mounted (mount, run, unmount).
     /// Use {MOUNT} in arguments to reference the mount path.
     Exec {

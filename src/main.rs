@@ -1,7 +1,9 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use fuser::{BackgroundSession, Config, MountOption, SessionACL};
+use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +25,7 @@ mod metadata;
 
 use crate::cli::{Cli, Commands, CommonOpts};
 use crate::fs::GitignoreMirrorFs;
+use crate::ignore_matcher::IgnoreMatcher;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -53,6 +56,7 @@ fn main() -> Result<()> {
             mountpoint,
             opts,
         }) => cmd_mount(source, mountpoint, &opts),
+        Some(Commands::List { source, opts }) => cmd_list(source, &opts),
         Some(Commands::Cp { source, dest, opts }) => cmd_cp(source, dest, &opts),
         Some(Commands::Exec {
             source,
@@ -298,6 +302,229 @@ fn cmd_open(source: PathBuf, opts: &CommonOpts) -> Result<()> {
 
 fn open_file_manager(path: &Path) {
     let _ = Command::new("xdg-open").arg(path).status();
+}
+
+const PRINT_LIMIT: u64 = 2000;
+
+fn cmd_list(source: PathBuf, opts: &CommonOpts) -> Result<()> {
+    let source = validate_source(&source)?;
+    let matcher = IgnoreMatcher::new(
+        &source,
+        opts.hide_git,
+        opts.hide_gitignore,
+        OsStr::new(&opts.ignore_file),
+    )
+    .context("failed to initialize ignore matcher")?;
+
+    let mut shown = 0u64;
+    let mut printed = 0u64;
+    let mut ignored = 0u64;
+    let mut size = 0u64;
+    let mut seen = HashSet::new();
+
+    list_tree(
+        &source,
+        Path::new(""),
+        &matcher,
+        "",
+        &mut shown,
+        &mut printed,
+        &mut ignored,
+        &mut size,
+        &mut seen,
+    )?;
+
+    if printed < shown {
+        println!(
+            "{} files ({} ignored, {} total, {} printed)",
+            shown,
+            ignored,
+            format_size(size),
+            printed,
+        );
+    } else {
+        println!(
+            "{} files ({} ignored, {} total)",
+            shown,
+            ignored,
+            format_size(size),
+        );
+    }
+
+    Ok(())
+}
+
+fn add_size(md: &std::fs::Metadata, total: &mut u64, seen: &mut HashSet<(u64, u64)>) {
+    if seen.insert((md.dev(), md.ino())) {
+        *total += md.blocks().max(1) as u64 * 512;
+    }
+}
+
+fn list_tree(
+    abs_dir: &Path,
+    rel: &Path,
+    matcher: &IgnoreMatcher,
+    indent: &str,
+    shown: &mut u64,
+    printed: &mut u64,
+    ignored: &mut u64,
+    size: &mut u64,
+    seen: &mut HashSet<(u64, u64)>,
+) -> Result<()> {
+    let mut entries: Vec<_> = std::fs::read_dir(abs_dir)?
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in &entries {
+        let name = entry.file_name();
+        let child_rel = if rel.as_os_str().is_empty() {
+            PathBuf::from(name.clone())
+        } else {
+            rel.join(&name)
+        };
+        let ft = entry.file_type()?;
+        let is_dir = ft.is_dir();
+        let is_symlink = ft.is_symlink();
+
+        if matcher.is_ignored(&child_rel, Some(ft)) {
+            if is_dir {
+                count_ignored(&entry.path(), ignored)?;
+            } else {
+                *ignored += 1;
+            }
+            continue;
+        }
+
+        if *printed >= PRINT_LIMIT {
+            if is_dir {
+                if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                    add_size(&md, size, seen);
+                }
+                count_remaining(
+                    &entry.path(),
+                    &child_rel,
+                    matcher,
+                    shown,
+                    ignored,
+                    size,
+                    seen,
+                )?;
+            } else {
+                *shown += 1;
+                if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                    add_size(&md, size, seen);
+                }
+            }
+            continue;
+        }
+
+        if is_dir {
+            println!("{}{}/", indent, name.to_string_lossy());
+            if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                add_size(&md, size, seen);
+            }
+            list_tree(
+                &entry.path(),
+                &child_rel,
+                matcher,
+                &format!("{}  ", indent),
+                shown,
+                printed,
+                ignored,
+                size,
+                seen,
+            )?;
+        } else {
+            *shown += 1;
+            *printed += 1;
+            let suffix = if is_symlink { "@" } else { "" };
+            println!("{}{}{}", indent, name.to_string_lossy(), suffix);
+            if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                add_size(&md, size, seen);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn count_remaining(
+    abs_dir: &Path,
+    rel: &Path,
+    matcher: &IgnoreMatcher,
+    shown: &mut u64,
+    ignored: &mut u64,
+    size: &mut u64,
+    seen: &mut HashSet<(u64, u64)>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(abs_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let child_rel = if rel.as_os_str().is_empty() {
+            PathBuf::from(name.clone())
+        } else {
+            rel.join(&name)
+        };
+        let ft = entry.file_type()?;
+        let is_dir = ft.is_dir();
+
+        if matcher.is_ignored(&child_rel, Some(ft)) {
+            if is_dir {
+                count_ignored(&entry.path(), ignored)?;
+            } else {
+                *ignored += 1;
+            }
+        } else if is_dir {
+            if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                add_size(&md, size, seen);
+            }
+            count_remaining(
+                &entry.path(),
+                &child_rel,
+                matcher,
+                shown,
+                ignored,
+                size,
+                seen,
+            )?;
+        } else {
+            *shown += 1;
+            if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                add_size(&md, size, seen);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn count_ignored(dir: &Path, ignored: &mut u64) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            count_ignored(&entry.path(), ignored)?;
+        } else {
+            *ignored += 1;
+        }
+    }
+    Ok(())
+}
+
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.1} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 fn mount_and_spawn(

@@ -49,6 +49,7 @@ clean-mount open /path/to/project
 | `mount SOURCE [MOUNTPOINT]` | Mount (omit mountpoint for auto temp dir + print path) |
 | `open SOURCE` | Mount + open in file manager |
 | `cp SOURCE DEST` | Mount, `cp -a` the filtered view to DEST, unmount |
+| `list SOURCE` | Preview the filtered view without mounting (dry-run) |
 | `exec SOURCE -- <command>` | Mount, run any command against the filtered view, unmount |
 
 All subcommands accept the same common options (`--hide-git`, `--ignore-file`, etc.).
@@ -62,6 +63,38 @@ clean-mount cp /path/to/python-project /tmp/clean-src --hide-git
 ```
 
 Internally this does: mount → `cp -a` → unmount. Your single command.
+
+### `list` — preview the filtered view without mounting (dry-run)
+
+```bash
+clean-mount list /path/to/project
+```
+
+Shows a tree of what the filtered view would contain without mounting anything.
+Useful for debugging ignore rules before running `cp`, `tar`, or `rsync`.
+
+```bash
+# See what would be visible
+clean-mount list /path/to/project
+
+# Check if specific ignore rules work as expected
+clean-mount list /path/to/project --hide-git --hide-gitignore
+
+# Use a different ignore file (e.g. .dockerignore)
+clean-mount list /path/to/project --ignore-file .dockerignore
+```
+
+Example output:
+
+```text
+src/
+  main.rs
+  lib.rs
+Cargo.toml
+Cargo.lock
+README.md
+12 files (847 ignored, 512.7 MB total)
+```
 
 ### `open` — browse the filtered view in your file manager
 
