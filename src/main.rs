@@ -69,8 +69,16 @@ fn main() -> Result<()> {
             opts,
         }) => cmd_exec(source, &command, &opts),
         Some(Commands::Open { source, opts }) => cmd_open(source, &opts),
-        Some(Commands::Tar { source, output, opts }) => cmd_tar(source, output, &opts),
-        Some(Commands::Zip { source, output, opts }) => cmd_zip(source, output, &opts),
+        Some(Commands::Tar {
+            source,
+            output,
+            opts,
+        }) => cmd_tar(source, output, &opts),
+        Some(Commands::Zip {
+            source,
+            output,
+            opts,
+        }) => cmd_zip(source, output, &opts),
     }
 }
 
