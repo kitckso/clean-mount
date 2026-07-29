@@ -63,4 +63,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: target/release/clean-mount
-          generate_release_notes: true
+          body: See [CHANGELOG.md](https://github.com/kitckso/clean-mount/blob/main/CHANGELOG.md) for details.
