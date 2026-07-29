@@ -49,7 +49,7 @@ clean-mount open /path/to/project
 | `mount SOURCE [MOUNTPOINT]` | Mount (omit mountpoint for auto temp dir + print path) |
 | `open SOURCE` | Mount + open in file manager |
 | `cp SOURCE DEST` | Mount, `cp -a` the filtered view to DEST, unmount |
-| `list SOURCE` | Preview the filtered view without mounting (dry-run) |
+| `list SOURCE` | Preview the filtered view without mounting (flat listing, no summary) |
 | `exec SOURCE -- <command>` | Mount, run any command against the filtered view, unmount |
 
 All subcommands accept the same common options (`--hide-git`, `--ignore-file`, etc.).
@@ -70,12 +70,18 @@ Internally this does: mount → `cp -a` → unmount. Your single command.
 clean-mount list /path/to/project
 ```
 
-Shows a tree of what the filtered view would contain without mounting anything.
+Shows what the filtered view would contain without mounting anything.
 Useful for debugging ignore rules before running `cp`, `tar`, or `rsync`.
 
 ```bash
-# See what would be visible
+# Flat top-level listing (default)
 clean-mount list /path/to/project
+
+# Full recursive tree
+clean-mount list /path/to/project --tree
+
+# Show summary statistics
+clean-mount list /path/to/project --summary
 
 # Check if specific ignore rules work as expected
 clean-mount list /path/to/project --hide-git --hide-gitignore
@@ -87,6 +93,13 @@ clean-mount list /path/to/project --ignore-file .dockerignore
 Example output:
 
 ```text
+$ clean-mount list /path/to/project
+src/
+Cargo.toml
+Cargo.lock
+README.md
+
+$ clean-mount list /path/to/project --tree --summary
 src/
   main.rs
   lib.rs
@@ -265,7 +278,7 @@ cd /tmp/mirror && zip -r ~/filtered.zip .
 
 ### Common Options
 
-All subcommands accept these options:
+All subcommands accept these options. `list` also accepts `--tree`/`-t` and `--summary`/`-s`:
 
 | Flag                    | Description                                                       |
 | ----------------------- | ----------------------------------------------------------------- |
@@ -277,6 +290,8 @@ All subcommands accept these options:
 | `--hide-gitignore`      | Always hide `.gitignore` files                                    |
 | `--ignore-file <NAME>`  | Ignore file to use instead of `.gitignore` (default: `.gitignore`) |
 | `--clipboard`           | Copy the auto temp mount path to clipboard                          |
+| `--tree` / `-t`         | Show recursive directory tree (list only)                           |
+| `--summary` / `-s`      | Show file/ignored/size summary (list only)                          |
 
 ### Logging
 

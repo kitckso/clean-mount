@@ -93,11 +93,17 @@ pub enum Commands {
     },
 
     /// List the filtered view without mounting (dry-run / preview).
-    /// Shows what the filtered view would contain, with summary stats.
+    /// Shows what the filtered view would contain.
     List {
         source: PathBuf,
         #[command(flatten)]
         opts: CommonOpts,
+        /// Recursively show the full tree (default: top-level only).
+        #[arg(long, short)]
+        tree: bool,
+        /// Show summary statistics after listing.
+        #[arg(long, short)]
+        summary: bool,
     },
 
     /// Execute a command with the filtered view mounted (mount, run, unmount).

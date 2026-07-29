@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2] - 2026-07-29
+
+### Added
+
+- `list --tree` / `-t` — show full recursive directory tree (default: flat list).
+- `list --summary` / `-s` — show summary statistics (default: hidden).
+
+### Changed
+
+- `list` default changed to flat top-level listing without summary for performance on large trees.
+- Summary stats now use a separate full-tree walk (unchanged accuracy).
+
 ## [0.1.1] - 2026-07-28
 
 ### Added

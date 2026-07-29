@@ -56,7 +56,12 @@ fn main() -> Result<()> {
             mountpoint,
             opts,
         }) => cmd_mount(source, mountpoint, &opts),
-        Some(Commands::List { source, opts }) => cmd_list(source, &opts),
+        Some(Commands::List {
+            source,
+            opts,
+            tree,
+            summary,
+        }) => cmd_list(source, &opts, tree, summary),
         Some(Commands::Cp { source, dest, opts }) => cmd_cp(source, dest, &opts),
         Some(Commands::Exec {
             source,
@@ -319,7 +324,6 @@ const PRINT_LIMIT: u64 = 2000;
 
 struct ListCtx {
     shown: u64,
-    printed: u64,
     ignored: u64,
     size: u64,
     seen: HashSet<(u64, u64)>,
@@ -329,7 +333,6 @@ impl ListCtx {
     fn new() -> Self {
         Self {
             shown: 0,
-            printed: 0,
             ignored: 0,
             size: 0,
             seen: HashSet::new(),
@@ -337,7 +340,7 @@ impl ListCtx {
     }
 }
 
-fn cmd_list(source: PathBuf, opts: &CommonOpts) -> Result<()> {
+fn cmd_list(source: PathBuf, opts: &CommonOpts, tree: bool, summary: bool) -> Result<()> {
     let source = validate_source(&source)?;
     let matcher = IgnoreMatcher::new(
         &source,
@@ -347,25 +350,40 @@ fn cmd_list(source: PathBuf, opts: &CommonOpts) -> Result<()> {
     )
     .context("failed to initialize ignore matcher")?;
 
-    let mut ctx = ListCtx::new();
+    let max_depth = if tree { None } else { Some(0) };
 
-    list_tree(&source, Path::new(""), &matcher, "", &mut ctx)?;
+    let mut printed = 0;
+    let mut ctx = summary.then(ListCtx::new);
+    let truncated = list_tree(
+        &source,
+        Path::new(""),
+        &matcher,
+        "",
+        &mut printed,
+        max_depth,
+        0,
+        ctx.as_mut(),
+    )?;
 
-    if ctx.printed < ctx.shown {
-        println!(
-            "{} files ({} ignored, {} total, {} printed)",
-            ctx.shown,
-            ctx.ignored,
-            format_size(ctx.size),
-            ctx.printed,
-        );
-    } else {
-        println!(
-            "{} files ({} ignored, {} total)",
-            ctx.shown,
-            ctx.ignored,
-            format_size(ctx.size),
-        );
+    if let Some(ctx) = ctx {
+        if printed < ctx.shown {
+            println!(
+                "{} files ({} ignored, {} total, {} printed)",
+                ctx.shown,
+                ctx.ignored,
+                format_size(ctx.size),
+                printed,
+            );
+        } else {
+            println!(
+                "{} files ({} ignored, {} total)",
+                ctx.shown,
+                ctx.ignored,
+                format_size(ctx.size),
+            );
+        }
+    } else if truncated {
+        println!("... (truncated at {} files)", PRINT_LIMIT);
     }
 
     Ok(())
@@ -377,17 +395,51 @@ fn add_size(md: &std::fs::Metadata, seen: &mut HashSet<(u64, u64)>, total: &mut 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn list_tree(
     abs_dir: &Path,
     rel: &Path,
     matcher: &IgnoreMatcher,
     indent: &str,
-    ctx: &mut ListCtx,
-) -> Result<()> {
+    printed: &mut u64,
+    max_depth: Option<u64>,
+    depth: u64,
+    mut ctx: Option<&mut ListCtx>,
+) -> Result<bool> {
     let mut entries: Vec<_> = std::fs::read_dir(abs_dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
 
     for entry in &entries {
+        if *printed >= PRINT_LIMIT {
+            if let Some(ctx) = ctx {
+                let name = entry.file_name();
+                let child_rel = if rel.as_os_str().is_empty() {
+                    PathBuf::from(name.clone())
+                } else {
+                    rel.join(&name)
+                };
+                let ft = entry.file_type()?;
+                if matcher.is_ignored(&child_rel, Some(ft)) {
+                    if ft.is_dir() {
+                        count_ignored(&entry.path(), &mut ctx.ignored)?;
+                    } else {
+                        ctx.ignored += 1;
+                    }
+                } else if ft.is_dir() {
+                    if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                        add_size(&md, &mut ctx.seen, &mut ctx.size);
+                    }
+                    count_remaining(&entry.path(), &child_rel, matcher, ctx)?;
+                } else {
+                    ctx.shown += 1;
+                    if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                        add_size(&md, &mut ctx.seen, &mut ctx.size);
+                    }
+                }
+            }
+            return Ok(true);
+        }
+
         let name = entry.file_name();
         let child_rel = if rel.as_os_str().is_empty() {
             PathBuf::from(name.clone())
@@ -399,24 +451,11 @@ fn list_tree(
         let is_symlink = ft.is_symlink();
 
         if matcher.is_ignored(&child_rel, Some(ft)) {
-            if is_dir {
-                count_ignored(&entry.path(), &mut ctx.ignored)?;
-            } else {
-                ctx.ignored += 1;
-            }
-            continue;
-        }
-
-        if ctx.printed >= PRINT_LIMIT {
-            if is_dir {
-                if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                    add_size(&md, &mut ctx.seen, &mut ctx.size);
-                }
-                count_remaining(&entry.path(), &child_rel, matcher, ctx)?;
-            } else {
-                ctx.shown += 1;
-                if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                    add_size(&md, &mut ctx.seen, &mut ctx.size);
+            if let Some(ref mut c) = ctx {
+                if is_dir {
+                    count_ignored(&entry.path(), &mut c.ignored)?;
+                } else {
+                    c.ignored += 1;
                 }
             }
             continue;
@@ -424,28 +463,41 @@ fn list_tree(
 
         if is_dir {
             println!("{}{}/", indent, name.to_string_lossy());
-            if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                add_size(&md, &mut ctx.seen, &mut ctx.size);
+            if let Some(ref mut c) = ctx {
+                if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                    add_size(&md, &mut c.seen, &mut c.size);
+                }
             }
-            list_tree(
-                &entry.path(),
-                &child_rel,
-                matcher,
-                &format!("{}  ", indent),
-                ctx,
-            )?;
+            if max_depth.is_none_or(|md| depth < md) {
+                if list_tree(
+                    &entry.path(),
+                    &child_rel,
+                    matcher,
+                    &format!("{}  ", indent),
+                    printed,
+                    max_depth,
+                    depth + 1,
+                    ctx.as_deref_mut(),
+                )? {
+                    return Ok(true);
+                }
+            } else if let Some(ref mut c) = ctx {
+                count_remaining(&entry.path(), &child_rel, matcher, c)?;
+            }
         } else {
-            ctx.shown += 1;
-            ctx.printed += 1;
+            *printed += 1;
             let suffix = if is_symlink { "@" } else { "" };
             println!("{}{}{}", indent, name.to_string_lossy(), suffix);
-            if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                add_size(&md, &mut ctx.seen, &mut ctx.size);
+            if let Some(ref mut c) = ctx {
+                c.shown += 1;
+                if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                    add_size(&md, &mut c.seen, &mut c.size);
+                }
             }
         }
     }
 
-    Ok(())
+    Ok(false)
 }
 
 fn count_remaining(
