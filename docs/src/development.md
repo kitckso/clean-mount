@@ -15,6 +15,18 @@ sudo dnf install fuse3-devel
 brew install macfuse
 ```
 
+## Pre-commit hooks (prek)
+
+This repo uses [prek](https://github.com/j178/prek) to run `cargo fmt` and `cargo clippy` before each commit.
+
+```bash
+# Install prek (one time)
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/j178/prek/releases/download/v0.4.11/prek-installer.sh | sh
+
+# Install the git hook (per clone)
+prek install
+```
+
 ## Running tests
 
 ```bash
