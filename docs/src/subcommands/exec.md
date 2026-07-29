@@ -1,12 +1,8 @@
 # exec
 
+For quick archive creation, consider the [`tar`](tar.md) and [`zip`](zip.md) subcommands instead.
+
 ```bash
-# tar
-clean-mount exec /path/to/project -- tar -czf /tmp/out.tar.gz .
-
-# zip
-clean-mount exec /path/to/project -- zip -r /tmp/out.zip .
-
 # rsync
 clean-mount exec /path/to/project -- rsync -avz . user@server:/deploy-path
 

@@ -6,6 +6,8 @@
   - [mount](subcommands/mount.md)
   - [cp](subcommands/cp.md)
   - [list](subcommands/list.md)
+  - [tar](subcommands/tar.md)
+  - [zip](subcommands/zip.md)
   - [exec](subcommands/exec.md)
   - [open](subcommands/open.md)
 - [Use Cases](use-cases.md)

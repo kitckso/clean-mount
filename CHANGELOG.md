@@ -6,6 +6,8 @@
 
 - `list --tree` / `-t` — show full recursive directory tree (default: flat list).
 - `list --summary` / `-s` — show summary statistics (default: hidden).
+- `tar SOURCE OUTPUT` — create a tarball of the filtered view (compression auto-detected from suffix e.g. `.tar.gz`, `.tgz`, `.tar.xz`, `.tar.bz2`, `.tar.zst`, `.tar`).
+- `zip SOURCE OUTPUT` — create a zip archive of the filtered view.
 
 ### Changed
 

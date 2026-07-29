@@ -69,6 +69,8 @@ fn main() -> Result<()> {
             opts,
         }) => cmd_exec(source, &command, &opts),
         Some(Commands::Open { source, opts }) => cmd_open(source, &opts),
+        Some(Commands::Tar { source, output, opts }) => cmd_tar(source, output, &opts),
+        Some(Commands::Zip { source, output, opts }) => cmd_zip(source, output, &opts),
     }
 }
 
@@ -307,6 +309,62 @@ fn cmd_open(source: PathBuf, opts: &CommonOpts) -> Result<()> {
 
 fn open_file_manager(path: &Path) {
     let _ = Command::new("xdg-open").arg(path).status();
+}
+
+fn cmd_tar(source: PathBuf, output: PathBuf, opts: &CommonOpts) -> Result<()> {
+    let source = validate_source(&source)?;
+    let mountpoint = create_temp_mountpoint(&source)?;
+    let _session = mount_and_spawn(&source, opts, mountpoint.path())?;
+
+    tracing::info!(
+        source = %source.display(),
+        output = %output.display(),
+        "creating tarball"
+    );
+
+    let status = Command::new("tar")
+        .args(["-acf", &output.to_string_lossy(), "-C"])
+        .arg(mountpoint.path())
+        .arg(".")
+        .status()
+        .context("failed to execute tar")?;
+
+    drop(_session);
+
+    if !status.success() {
+        bail!("tar exited with status: {}", status);
+    }
+
+    tracing::info!("tarball created");
+    Ok(())
+}
+
+fn cmd_zip(source: PathBuf, output: PathBuf, opts: &CommonOpts) -> Result<()> {
+    let source = validate_source(&source)?;
+    let mountpoint = create_temp_mountpoint(&source)?;
+    let _session = mount_and_spawn(&source, opts, mountpoint.path())?;
+
+    tracing::info!(
+        source = %source.display(),
+        output = %output.display(),
+        "creating zip archive"
+    );
+
+    let status = Command::new("zip")
+        .args(["-r", &output.to_string_lossy()])
+        .arg(".")
+        .current_dir(mountpoint.path())
+        .status()
+        .context("failed to execute zip")?;
+
+    drop(_session);
+
+    if !status.success() {
+        bail!("zip exited with status: {}", status);
+    }
+
+    tracing::info!("zip archive created");
+    Ok(())
 }
 
 fn mount_and_spawn(

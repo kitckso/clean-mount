@@ -50,6 +50,8 @@ clean-mount open /path/to/project
 | `open SOURCE` | Mount + open in file manager |
 | `cp SOURCE DEST` | Mount, `cp -a` the filtered view to DEST, unmount |
 | `list SOURCE` | Preview the filtered view without mounting (flat listing, no summary) |
+| `tar SOURCE OUTPUT` | Mount, create tarball of the filtered view, unmount (compression from suffix) |
+| `zip SOURCE OUTPUT` | Mount, create `.zip`  of the filtered view, unmount |
 | `exec SOURCE -- <command>` | Mount, run any command against the filtered view, unmount |
 
 All subcommands accept the same common options (`--hide-git`, `--ignore-file`, etc.).
@@ -118,15 +120,35 @@ clean-mount open /path/to/project
 Opens a temporary mount in your system file manager (nautilus, dolphin, finder, etc.).
 Press Ctrl+C to unmount and close.
 
+### `tar` — one-shot filtered tarball
+
+```bash
+# gzip
+clean-mount tar /path/to/project /tmp/project.tgz
+
+# xz
+clean-mount tar /path/to/project /tmp/project.tar.xz
+
+# bzip2
+clean-mount tar /path/to/project /tmp/project.tar.bz2
+
+# no compression
+clean-mount tar /path/to/project /tmp/project.tar
+```
+
+Compression auto-detected from suffix (`.tar` = none, `.tar.gz`/`.tgz` = gzip, `.tar.xz`/`.txz` = xz, `.tar.bz2`/`.tbz2`/`.tbz` = bzip2, `.tar.zst`/`.tzst` = zstd). Internally: mount → `tar -acf` → unmount.
+
+### `zip` — one-shot filtered zip archive
+
+```bash
+clean-mount zip /path/to/project /tmp/project.zip
+```
+
+Internally: mount → `zip -r` → unmount.
+
 ### `exec` — run any tool against the filtered view
 
 ```bash
-# tar
-clean-mount exec /path/to/project -- tar -czf /tmp/out.tar.gz .
-
-# zip
-clean-mount exec /path/to/project -- zip -r /tmp/out.zip .
-
 # rsync
 clean-mount exec /path/to/project -- rsync -avz . user@server:/deploy-path
 
@@ -224,7 +246,7 @@ Since `node_modules` is typically in `.gitignore`, it simply won't exist in the 
 ### 🐍 Archive a Python project without `venv` / `__pycache__`
 
 ```bash
-clean-mount exec /path/to/python-project -- tar -czf /tmp/project-source.tar.gz .
+clean-mount tar /path/to/python-project /tmp/project-source.tar.gz
 ```
 
 Virtual environments, cache directories, and other gitignored files disappear automatically.

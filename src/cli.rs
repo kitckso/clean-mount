@@ -115,4 +115,20 @@ pub enum Commands {
         #[command(flatten)]
         opts: CommonOpts,
     },
+
+    /// Create a gzipped tarball of the filtered view.
+    Tar {
+        source: PathBuf,
+        output: PathBuf,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
+
+    /// Create a zip archive of the filtered view.
+    Zip {
+        source: PathBuf,
+        output: PathBuf,
+        #[command(flatten)]
+        opts: CommonOpts,
+    },
 }
