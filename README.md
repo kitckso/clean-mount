@@ -303,6 +303,14 @@ clean-mount mount /path/to/project /tmp/clean --hide-git --hide-gitignore
 
 The agent only sees what matters — your actual source code.
 
+### 🐳 Inspect what goes into a Docker build
+
+```bash
+clean-mount list /path/to/project --ignore-file .dockerignore --tree --summary
+```
+
+See exactly which files and how much data would be sent to the Docker daemon. Avoid bloated images by verifying your `.dockerignore` rules — no build needed.
+
 ## Usage
 
 ### Mount
