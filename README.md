@@ -53,8 +53,43 @@ clean-mount open /path/to/project
 | `tar SOURCE OUTPUT` | Mount, create tarball of the filtered view, unmount (compression from suffix) |
 | `zip SOURCE OUTPUT` | Mount, create `.zip`  of the filtered view, unmount |
 | `exec SOURCE -- <command>` | Mount, run any command against the filtered view, unmount |
+| `complete [SHELL]` | Generate shell completion script (bash, zsh, fish, elvish, powershell). Use `--install` to auto-add the eval line to your shell rc file. |
 
-All subcommands accept the same common options (`--hide-git`, `--ignore-file`, etc.).
+`tar`, `zip`, `cp`, `mount`, `open`, `exec`, and `list` accept the same common options (`--hide-git`, `--ignore-file`, etc.). `complete` does not need them.
+
+### `complete` — shell tab completion
+
+```bash
+# Add to ~/.bashrc, ~/.zshrc, etc.
+eval "$(clean-mount complete)"
+```
+
+Or let clean-mount add the line to your rc file automatically:
+
+```bash
+clean-mount complete --install
+```
+
+Pass a shell to install for a different shell than `$SHELL`:
+
+```bash
+clean-mount complete --install zsh
+```
+
+Auto-detects your shell from `$SHELL`. Pass a shell name explicitly for other shells:
+
+```bash
+# bash
+clean-mount complete bash > ~/.local/share/bash-completion/completions/clean-mount
+
+# zsh (ensure ~/.zsh/completions is in your fpath)
+mkdir -p ~/.zsh/completions
+clean-mount complete zsh > ~/.zsh/completions/_clean-mount
+
+# fish
+clean-mount complete fish > ~/.config/fish/completions/clean-mount.fish
+```
+
 
 ### `cp` — one-shot filtered copy
 

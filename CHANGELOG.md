@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3] - 2026-07-29
+
+### Added
+
+- `complete [SHELL]` — generate shell completion script for bash, zsh, fish, elvish, powershell.
+- `complete --install` — auto-install completions by appending `eval "$(clean-mount complete)"` to the shell rc file.
+
 ## [0.1.2] - 2026-07-29
 
 ### Added

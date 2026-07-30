@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use clap::CommandFactory;
 use clap::Parser;
 use fuser::{BackgroundSession, Config, MountOption, SessionACL};
 use std::collections::HashSet;
@@ -79,6 +80,14 @@ fn main() -> Result<()> {
             output,
             opts,
         }) => cmd_zip(source, output, &opts),
+        Some(Commands::Complete { shell, install }) => {
+            if install {
+                cmd_complete_install(shell)?;
+            } else {
+                cmd_complete(shell)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -372,6 +381,83 @@ fn cmd_zip(source: PathBuf, output: PathBuf, opts: &CommonOpts) -> Result<()> {
     }
 
     tracing::info!("zip archive created");
+    Ok(())
+}
+
+fn cmd_complete(shell: Option<clap_complete::Shell>) -> Result<()> {
+    use clap_complete::generate;
+    use std::io::Write;
+    let shell = shell
+        .or_else(clap_complete::Shell::from_env)
+        .unwrap_or(clap_complete::Shell::Bash);
+    let mut cmd = Cli::command();
+    let mut buf = Vec::new();
+    generate(shell, &mut cmd, "clean-mount", &mut buf);
+    let output = String::from_utf8(buf)?;
+    let _ = writeln!(std::io::stdout(), "{output}");
+    Ok(())
+}
+
+fn cmd_complete_install(shell: Option<clap_complete::Shell>) -> Result<()> {
+    use std::io::Write;
+    let explicit = shell.is_some();
+    let shell = shell
+        .or_else(clap_complete::Shell::from_env)
+        .unwrap_or(clap_complete::Shell::Bash);
+    let home = std::env::var("HOME").context("$HOME not set")?;
+    let home = Path::new(&home);
+
+    let rc_file: PathBuf = match shell {
+        clap_complete::Shell::Bash => home.join(".bashrc"),
+        clap_complete::Shell::Zsh => home.join(".zshrc"),
+        clap_complete::Shell::Fish => home.join(".config/fish/config.fish"),
+        clap_complete::Shell::Elvish => home.join(".config/elvish/rc.elv"),
+        _ => bail!("auto-install not supported for {shell}. Install manually by adding `eval \"$(clean-mount complete {shell})\"` to your shell's rc file."),
+    };
+
+    let bin = std::env::args()
+        .next()
+        .map(|p| {
+            Path::new(&p)
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_else(|| "clean-mount".to_string());
+    let line = if explicit {
+        format!("eval \"$({bin} complete {shell})\"")
+    } else {
+        format!("eval \"$({bin} complete)\"")
+    };
+    let comment = "# clean-mount shell completion";
+
+    if rc_file.exists() {
+        let content = std::fs::read_to_string(&rc_file)?;
+        if content.contains(&line) || content.contains(comment) {
+            eprintln!("completions already installed in {}", rc_file.display());
+            return Ok(());
+        }
+    }
+
+    if let Some(parent) = rc_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&rc_file)?;
+
+    writeln!(file)?;
+    writeln!(file, "{comment}")?;
+    writeln!(file, "{line}")?;
+
+    eprintln!("completions installed in {}", rc_file.display());
+    eprintln!(
+        "run `source {}` or restart your shell to activate",
+        rc_file.display()
+    );
     Ok(())
 }
 

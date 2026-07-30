@@ -9,5 +9,6 @@
 | `exec SOURCE -- <command>` | Mount, run any command against the filtered view, unmount |
 | `tar SOURCE OUTPUT` | Mount, create tarball of the filtered view, unmount (compression from suffix) |
 | `zip SOURCE OUTPUT` | Mount, create `.zip`  of the filtered view, unmount |
+| `complete [SHELL]` | Generate shell completion script (bash, zsh, fish, elvish, powershell). Use `--install` to auto-add the eval line to your shell rc file. |
 
-All subcommands accept the same common options (`--hide-git`, `--ignore-file`, etc.).
+`tar`, `zip`, `cp`, `mount`, `open`, `exec`, and `list` accept the same common options (`--hide-git`, `--ignore-file`, etc.). `complete` does not need them.

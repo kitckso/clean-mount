@@ -1,4 +1,5 @@
 use clap::{Args, Parser, Subcommand};
+use clap_complete::Shell;
 use std::path::PathBuf;
 
 #[derive(Args, Debug, Clone)]
@@ -130,5 +131,16 @@ pub enum Commands {
         output: PathBuf,
         #[command(flatten)]
         opts: CommonOpts,
+    },
+
+    /// Generate shell completion script.
+    /// Run `eval "$(clean-mount complete)"` in your shell rc file.
+    Complete {
+        /// Shell to generate completions for (auto-detect if omitted).
+        shell: Option<Shell>,
+
+        /// Install completions by appending the eval line to your shell rc file.
+        #[arg(long)]
+        install: bool,
     },
 }
