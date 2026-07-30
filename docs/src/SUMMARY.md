@@ -8,6 +8,7 @@
   - [list](subcommands/list.md)
   - [tar](subcommands/tar.md)
   - [zip](subcommands/zip.md)
+  - [complete](subcommands/complete.md)
   - [exec](subcommands/exec.md)
   - [open](subcommands/open.md)
 - [Use Cases](use-cases.md)
