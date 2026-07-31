@@ -10,6 +10,10 @@
 - Auto-exit when mount is unmounted externally (via `fusermount3 -u` or `umount`).
 - Mount registry at `$XDG_RUNTIME_DIR/clean-mount/mounts/<pid>.mount` for tracking daemon mounts.
 
+### Changed
+
+- Internal: file reads now occur without holding the state lock, registry paths survive newlines/backslashes, and the tree walker was refactored into a `Lister`.
+
 ## [0.1.3] - 2026-07-30
 
 ### Added

@@ -21,7 +21,7 @@ impl MountEntry {
     pub fn uptime_str(&self) -> String {
         let secs = self.uptime_secs();
         if secs < 60 {
-            format!("{}s", secs)
+            format!("{secs}s")
         } else if secs < 3600 {
             format!("{}m {}s", secs / 60, secs % 60)
         } else {
@@ -32,7 +32,10 @@ impl MountEntry {
     fn serialize(&self) -> String {
         format!(
             "{}\n{}\n{}\n{}\n",
-            self.pid, self.source, self.mountpoint, self.started_at
+            self.pid,
+            escape(&self.source),
+            escape(&self.mountpoint),
+            self.started_at
         )
     }
 
@@ -40,11 +43,35 @@ impl MountEntry {
         let mut lines = s.lines();
         Some(MountEntry {
             pid: lines.next()?.parse().ok()?,
-            source: lines.next()?.to_string(),
-            mountpoint: lines.next()?.to_string(),
+            source: unescape(lines.next()?),
+            mountpoint: unescape(lines.next()?),
             started_at: lines.next()?.parse().ok()?,
         })
     }
+}
+
+fn escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\n', "\\n")
+}
+
+fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('\\') | None => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 pub struct MountRegistry {
@@ -69,7 +96,7 @@ impl MountRegistry {
     }
 
     fn pid_path(&self, pid: u32) -> PathBuf {
-        self.dir.join(format!("{}.mount", pid))
+        self.dir.join(format!("{pid}.mount"))
     }
 
     pub fn register(&self, source: &Path, mountpoint: &Path, pid: u32) -> Result<MountEntry> {
@@ -144,4 +171,54 @@ fn process_exists(pid: u32) -> bool {
         return true;
     }
     std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serialize_round_trips_paths_with_newlines_and_backslashes() {
+        let entry = MountEntry {
+            pid: 1234,
+            source: "/tmp/src\nwith\\quirk".to_string(),
+            mountpoint: "/mnt/clean\nmount".to_string(),
+            started_at: 42,
+        };
+
+        let restored = MountEntry::deserialize(&entry.serialize()).unwrap();
+
+        assert_eq!(restored.pid, entry.pid);
+        assert_eq!(restored.source, entry.source);
+        assert_eq!(restored.mountpoint, entry.mountpoint);
+        assert_eq!(restored.started_at, entry.started_at);
+    }
+
+    #[test]
+    fn serialize_round_trips_plain_paths() {
+        let entry = MountEntry {
+            pid: 7,
+            source: "/tmp/src".to_string(),
+            mountpoint: "/mnt/view".to_string(),
+            started_at: 0,
+        };
+
+        let restored = MountEntry::deserialize(&entry.serialize()).unwrap();
+
+        assert_eq!(restored.pid, entry.pid);
+        assert_eq!(restored.source, entry.source);
+        assert_eq!(restored.mountpoint, entry.mountpoint);
+        assert_eq!(restored.started_at, entry.started_at);
+    }
+
+    #[test]
+    fn deserialize_returns_none_for_missing_fields() {
+        assert!(MountEntry::deserialize("1234\nonly-one-line\n").is_none());
+    }
+
+    #[test]
+    fn escape_handles_backslashes_and_newlines() {
+        assert_eq!(escape("a\\b\nc"), "a\\\\b\\nc");
+        assert_eq!(unescape("a\\\\b\\nc"), "a\\b\nc");
+    }
 }

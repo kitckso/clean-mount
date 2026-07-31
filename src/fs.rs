@@ -1,5 +1,5 @@
 use crate::ignore_matcher::IgnoreMatcher;
-use crate::inode::InodeTable;
+use crate::inode::{normalize_rel, InodeTable};
 use crate::metadata::{file_attr_from_metadata, file_type_from};
 use fuser::{
     AccessFlags, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
@@ -8,19 +8,19 @@ use fuser::{
 };
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr};
-use std::fs::{self, File};
+use std::fs::{self, File, Metadata};
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 const ROOT_INO: u64 = 1;
 
 struct OpenHandle {
-    file: File,
+    file: Arc<File>,
 }
 
 struct FsState {
@@ -38,7 +38,7 @@ pub struct GitignoreMirrorFs {
 
 impl GitignoreMirrorFs {
     pub fn new(
-        source: PathBuf,
+        source: &Path,
         ttl: Duration,
         hide_git: bool,
         hide_gitignore: bool,
@@ -46,7 +46,7 @@ impl GitignoreMirrorFs {
     ) -> anyhow::Result<Self> {
         let source = source.canonicalize()?;
         let ignores =
-            IgnoreMatcher::new(&source, hide_git, hide_gitignore, OsStr::new(ignore_file))?;
+            IgnoreMatcher::new(&source, hide_git, hide_gitignore, OsStr::new(ignore_file));
 
         Ok(Self {
             source,
@@ -72,14 +72,27 @@ impl GitignoreMirrorFs {
         self.ignores.is_ignored(rel, ft)
     }
 
+    fn lock_state(&self) -> Option<MutexGuard<'_, FsState>> {
+        self.state.lock().ok()
+    }
+
     fn rel_or_enoent(&self, ino: INodeNo) -> Result<PathBuf, Errno> {
-        self.state
-            .lock()
-            .unwrap()
+        let state = self.lock_state().ok_or(Errno::EIO)?;
+        state
             .inodes
             .path(ino.0)
-            .map(|p| p.to_path_buf())
+            .map(Path::to_path_buf)
             .ok_or(Errno::ENOENT)
+    }
+
+    fn resolve(&self, ino: INodeNo) -> Result<(PathBuf, PathBuf, Metadata), Errno> {
+        let rel = self.rel_or_enoent(ino)?;
+        let abs = self.abs(&rel);
+        let md = fs::symlink_metadata(&abs).map_err(|e| err(&e))?;
+        if self.is_hidden(&rel, Some(md.file_type())) {
+            return Err(Errno::ENOENT);
+        }
+        Ok((rel, abs, md))
     }
 
     fn reply_entry_for_rel(&self, rel: &Path, reply: ReplyEntry, increment_lookup: bool) {
@@ -100,7 +113,10 @@ impl GitignoreMirrorFs {
         }
 
         let ino = {
-            let mut state = self.state.lock().unwrap();
+            let Some(mut state) = self.lock_state() else {
+                reply.error(Errno::EIO);
+                return;
+            };
             let ino = state.inodes.get_or_create(&rel);
             if increment_lookup {
                 state.inodes.add_lookup(ino);
@@ -123,23 +139,6 @@ fn last_err() -> Errno {
             .raw_os_error()
             .unwrap_or(libc::EIO),
     )
-}
-
-fn normalize_rel(rel: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-
-    for comp in rel.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(c) => out.push(c),
-            _ => {}
-        }
-    }
-
-    out
 }
 
 fn normalize_lexically(path: &Path) -> PathBuf {
@@ -244,60 +243,32 @@ impl Filesystem for GitignoreMirrorFs {
     }
 
     fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
-        self.state.lock().unwrap().inodes.forget(ino.0, nlookup);
+        if let Some(mut state) = self.lock_state() {
+            state.inodes.forget(ino.0, nlookup);
+        }
     }
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
-        let rel = match self.rel_or_enoent(ino) {
-            Ok(p) => p,
+        let (_, _, md) = match self.resolve(ino) {
+            Ok(v) => v,
             Err(e) => {
                 reply.error(e);
                 return;
             }
         };
-
-        let abs = self.abs(&rel);
-
-        let md = match fs::symlink_metadata(&abs) {
-            Ok(md) => md,
-            Err(e) => {
-                reply.error(err(&e));
-                return;
-            }
-        };
-
-        if self.is_hidden(&rel, Some(md.file_type())) {
-            reply.error(Errno::ENOENT);
-            return;
-        }
 
         let attr = file_attr_from_metadata(ino.0, &md);
         reply.attr(&self.ttl, &attr);
     }
 
     fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
-        let rel = match self.rel_or_enoent(ino) {
-            Ok(p) => p,
+        let (_, abs, md) = match self.resolve(ino) {
+            Ok(v) => v,
             Err(e) => {
                 reply.error(e);
                 return;
             }
         };
-
-        let abs = self.abs(&rel);
-
-        let md = match fs::symlink_metadata(&abs) {
-            Ok(md) => md,
-            Err(e) => {
-                reply.error(err(&e));
-                return;
-            }
-        };
-
-        if self.is_hidden(&rel, Some(md.file_type())) {
-            reply.error(Errno::ENOENT);
-            return;
-        }
 
         if !md.file_type().is_symlink() {
             reply.error(Errno::EINVAL);
@@ -324,28 +295,13 @@ impl Filesystem for GitignoreMirrorFs {
     }
 
     fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
-        let rel = match self.rel_or_enoent(ino) {
-            Ok(p) => p,
+        let (_, _, md) = match self.resolve(ino) {
+            Ok(v) => v,
             Err(e) => {
                 reply.error(e);
                 return;
             }
         };
-
-        let abs = self.abs(&rel);
-
-        let md = match fs::symlink_metadata(&abs) {
-            Ok(md) => md,
-            Err(e) => {
-                reply.error(err(&e));
-                return;
-            }
-        };
-
-        if self.is_hidden(&rel, Some(md.file_type())) {
-            reply.error(Errno::ENOENT);
-            return;
-        }
 
         if !md.is_dir() {
             reply.error(Errno::ENOTDIR);
@@ -363,45 +319,35 @@ impl Filesystem for GitignoreMirrorFs {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let rel = match self.rel_or_enoent(ino) {
-            Ok(p) => p,
+        let (rel, abs, md) = match self.resolve(ino) {
+            Ok(v) => v,
             Err(e) => {
                 reply.error(e);
                 return;
             }
         };
 
-        let abs = self.abs(&rel);
-
-        let md = match fs::symlink_metadata(&abs) {
-            Ok(md) => md,
-            Err(e) => {
-                reply.error(err(&e));
-                return;
-            }
-        };
-
-        if self.is_hidden(&rel, Some(md.file_type())) {
-            reply.error(Errno::ENOENT);
-            return;
-        }
-
         if !md.is_dir() {
             reply.error(Errno::ENOTDIR);
             return;
         }
 
+        let parent_ino = {
+            let Some(mut state) = self.lock_state() else {
+                reply.error(Errno::EIO);
+                return;
+            };
+            if rel.as_os_str().is_empty() {
+                ROOT_INO
+            } else {
+                let parent_rel = normalize_rel(rel.parent().unwrap_or(Path::new("")));
+                state.inodes.get_or_create(&parent_rel)
+            }
+        };
+
         let mut entries: Vec<(u64, FileType, PathBuf)> = Vec::new();
 
         entries.push((ino.0, FileType::Directory, PathBuf::from(".")));
-
-        let parent_ino = if rel.as_os_str().is_empty() {
-            ROOT_INO
-        } else {
-            let parent_rel = normalize_rel(rel.parent().unwrap_or(Path::new("")));
-            self.state.lock().unwrap().inodes.get_or_create(&parent_rel)
-        };
-
         entries.push((parent_ino, FileType::Directory, PathBuf::from("..")));
 
         let read_dir = match fs::read_dir(&abs) {
@@ -412,7 +358,7 @@ impl Filesystem for GitignoreMirrorFs {
             }
         };
 
-        let mut children: Vec<(PathBuf, u64, FileType)> = Vec::new();
+        let mut to_resolve: Vec<(PathBuf, PathBuf, FileType)> = Vec::new();
 
         for entry in read_dir {
             let entry = match entry {
@@ -424,23 +370,28 @@ impl Filesystem for GitignoreMirrorFs {
             };
 
             let name = entry.file_name();
-
-            let child_rel = if rel.as_os_str().is_empty() {
-                PathBuf::from(name.clone())
-            } else {
-                rel.join(&name)
-            };
-
+            let child_rel = child_path(&rel, &name);
             let ft = entry.file_type().ok();
 
             if self.is_hidden(&child_rel, ft) {
                 continue;
             }
 
-            let child_ino = self.state.lock().unwrap().inodes.get_or_create(&child_rel);
-            let kind = ft.map(file_type_from).unwrap_or(FileType::RegularFile);
+            let kind = ft.map_or(FileType::RegularFile, file_type_from);
 
-            children.push((PathBuf::from(name), child_ino, kind));
+            to_resolve.push((child_rel, PathBuf::from(name), kind));
+        }
+
+        let mut children: Vec<(PathBuf, u64, FileType)> = Vec::new();
+        {
+            let Some(mut state) = self.lock_state() else {
+                reply.error(Errno::EIO);
+                return;
+            };
+            for (child_rel, name, kind) in to_resolve {
+                let child_ino = state.inodes.get_or_create(&child_rel);
+                children.push((name, child_ino, kind));
+            }
         }
 
         children.sort_by(|a, b| a.0.cmp(&b.0));
@@ -481,28 +432,13 @@ impl Filesystem for GitignoreMirrorFs {
             return;
         }
 
-        let rel = match self.rel_or_enoent(ino) {
-            Ok(p) => p,
+        let (_, abs, md) = match self.resolve(ino) {
+            Ok(v) => v,
             Err(e) => {
                 reply.error(e);
                 return;
             }
         };
-
-        let abs = self.abs(&rel);
-
-        let md = match fs::symlink_metadata(&abs) {
-            Ok(md) => md,
-            Err(e) => {
-                reply.error(err(&e));
-                return;
-            }
-        };
-
-        if self.is_hidden(&rel, Some(md.file_type())) {
-            reply.error(Errno::ENOENT);
-            return;
-        }
 
         if md.is_dir() {
             reply.error(Errno::EISDIR);
@@ -531,10 +467,18 @@ impl Filesystem for GitignoreMirrorFs {
         };
 
         let fh = {
-            let mut state = self.state.lock().unwrap();
+            let Some(mut state) = self.lock_state() else {
+                reply.error(Errno::EIO);
+                return;
+            };
             let fh = state.next_fh;
             state.next_fh = state.next_fh.saturating_add(1);
-            state.handles.insert(fh, OpenHandle { file });
+            state.handles.insert(
+                fh,
+                OpenHandle {
+                    file: Arc::new(file),
+                },
+            );
             fh
         };
 
@@ -552,10 +496,14 @@ impl Filesystem for GitignoreMirrorFs {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
-        let state = self.state.lock().unwrap();
-        let handle = match state.handles.get(&fh.0) {
-            Some(h) => h,
-            None => {
+        let handle = {
+            let Some(state) = self.lock_state() else {
+                reply.error(Errno::EIO);
+                return;
+            };
+            if let Some(h) = state.handles.get(&fh.0) {
+                Arc::clone(&h.file)
+            } else {
                 reply.error(Errno::EBADF);
                 return;
             }
@@ -563,7 +511,7 @@ impl Filesystem for GitignoreMirrorFs {
 
         let mut buf = vec![0u8; size as usize];
 
-        match handle.file.read_at(&mut buf, offset) {
+        match handle.read_at(&mut buf, offset) {
             Ok(n) => {
                 buf.truncate(n);
                 reply.data(&buf);
@@ -582,7 +530,9 @@ impl Filesystem for GitignoreMirrorFs {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        self.state.lock().unwrap().handles.remove(&fh.0);
+        if let Some(mut state) = self.lock_state() {
+            state.handles.remove(&fh.0);
+        }
         reply.ok();
     }
 
@@ -609,33 +559,18 @@ impl Filesystem for GitignoreMirrorFs {
     }
 
     fn access(&self, _req: &Request, ino: INodeNo, mask: AccessFlags, reply: ReplyEmpty) {
-        let rel = match self.rel_or_enoent(ino) {
-            Ok(p) => p,
-            Err(e) => {
-                reply.error(e);
-                return;
-            }
-        };
-
         if mask.contains(AccessFlags::W_OK) {
             reply.error(Errno::EROFS);
             return;
         }
 
-        let abs = self.abs(&rel);
-
-        let md = match fs::symlink_metadata(&abs) {
-            Ok(md) => md,
+        let (_, abs, _) = match self.resolve(ino) {
+            Ok(v) => v,
             Err(e) => {
-                reply.error(err(&e));
+                reply.error(e);
                 return;
             }
         };
-
-        if self.is_hidden(&rel, Some(md.file_type())) {
-            reply.error(Errno::ENOENT);
-            return;
-        }
 
         let canonical = match fs::canonicalize(&abs) {
             Ok(p) => p,
@@ -650,12 +585,9 @@ impl Filesystem for GitignoreMirrorFs {
             return;
         }
 
-        let c_path = match CString::new(canonical.as_os_str().as_bytes()) {
-            Ok(p) => p,
-            Err(_) => {
-                reply.error(Errno::EINVAL);
-                return;
-            }
+        let Ok(c_path) = CString::new(canonical.as_os_str().as_bytes()) else {
+            reply.error(Errno::EINVAL);
+            return;
         };
 
         let rc = unsafe { libc::access(c_path.as_ptr(), mask.bits()) };
@@ -668,12 +600,9 @@ impl Filesystem for GitignoreMirrorFs {
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
-        let c_path = match CString::new(self.source.as_os_str().as_bytes()) {
-            Ok(p) => p,
-            Err(_) => {
-                reply.error(Errno::EINVAL);
-                return;
-            }
+        let Ok(c_path) = CString::new(self.source.as_os_str().as_bytes()) else {
+            reply.error(Errno::EINVAL);
+            return;
         };
 
         let mut st = MaybeUninit::<libc::statvfs>::zeroed();
@@ -733,18 +662,7 @@ mod tests {
         let missing = dir.path().join("does_not_exist");
 
         let result =
-            GitignoreMirrorFs::new(missing, Duration::from_secs(1), false, false, ".gitignore");
-
-        assert!(result.is_err(), "expected Err for non-existent source");
-    }
-
-    #[test]
-    fn new_returns_error_for_nonexistent_source_unwraps_io_error() {
-        let dir = tempdir().unwrap();
-        let missing = dir.path().join("does_not_exist");
-
-        let result =
-            GitignoreMirrorFs::new(missing, Duration::from_secs(1), false, false, ".gitignore");
+            GitignoreMirrorFs::new(&missing, Duration::from_secs(1), false, false, ".gitignore");
 
         assert!(result.is_err(), "expected Err for non-existent source");
     }
@@ -754,7 +672,7 @@ mod tests {
         let dir = tempdir().unwrap();
 
         let result = GitignoreMirrorFs::new(
-            dir.path().to_path_buf(),
+            dir.path(),
             Duration::from_secs(1),
             false,
             false,

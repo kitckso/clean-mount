@@ -88,12 +88,11 @@ impl InodeTable {
     }
 }
 
-fn normalize_rel(rel: &Path) -> PathBuf {
+pub fn normalize_rel(rel: &Path) -> PathBuf {
     let mut out = PathBuf::new();
 
     for comp in rel.components() {
         match comp {
-            Component::CurDir => {}
             Component::ParentDir => {
                 out.pop();
             }

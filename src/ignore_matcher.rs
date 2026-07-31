@@ -1,4 +1,3 @@
-use anyhow::Result;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::WalkBuilder;
 use std::ffi::OsStr;
@@ -27,7 +26,7 @@ impl IgnoreMatcher {
         hide_git: bool,
         hide_gitignore: bool,
         ignore_file_name: &OsStr,
-    ) -> Result<Self> {
+    ) -> Self {
         let mut rules: Vec<ScopedRule> = Vec::new();
 
         let walker = WalkBuilder::new(root)
@@ -52,14 +51,15 @@ impl IgnoreMatcher {
             };
 
             if entry.file_name() == ignore_file_name
-                && entry.file_type().map(|ft| ft.is_file()).unwrap_or(false)
+                && entry.file_type().is_some_and(|ft| ft.is_file())
             {
                 // The scope is the parent directory of the ignore file, relative to root.
-                let rel_path = entry.path().strip_prefix(root).unwrap();
+                let Ok(rel_path) = entry.path().strip_prefix(root) else {
+                    continue;
+                };
                 let scope = rel_path
                     .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(PathBuf::new);
+                    .map_or_else(PathBuf::new, Path::to_path_buf);
 
                 // Build a separate Gitignore with its root set to the scope directory.
                 // This ensures patterns are interpreted relative to the scope,
@@ -80,11 +80,11 @@ impl IgnoreMatcher {
             }
         }
 
-        Ok(Self {
+        Self {
             rules,
             hide_git,
             hide_gitignore,
-        })
+        }
     }
 
     pub fn is_ignored(&self, rel: &Path, file_type: Option<FileType>) -> bool {
@@ -109,7 +109,7 @@ impl IgnoreMatcher {
             }
 
             let is_dir = if ancestor == rel {
-                file_type.map(|ft| ft.is_dir()).unwrap_or(false)
+                file_type.is_some_and(|ft| ft.is_dir())
             } else {
                 true
             };
@@ -153,8 +153,7 @@ mod tests {
         fs::create_dir(dir.path().join("target")).unwrap();
         fs::write(dir.path().join("target").join("a.txt"), "artifact").unwrap();
 
-        let matcher =
-            IgnoreMatcher::new(dir.path(), false, false, OsStr::new(".gitignore")).unwrap();
+        let matcher = IgnoreMatcher::new(dir.path(), false, false, OsStr::new(".gitignore"));
 
         assert!(matcher.is_ignored(Path::new("secret.txt"), ft(&dir.path().join("secret.txt"))));
 
@@ -177,8 +176,7 @@ mod tests {
         fs::write(dir.path().join("src").join("debug.log"), "log").unwrap();
         fs::write(dir.path().join("src").join("main.rs"), "fn main() {}").unwrap();
 
-        let matcher =
-            IgnoreMatcher::new(dir.path(), false, false, OsStr::new(".gitignore")).unwrap();
+        let matcher = IgnoreMatcher::new(dir.path(), false, false, OsStr::new(".gitignore"));
 
         assert!(matcher.is_ignored(
             Path::new("src/debug.log"),
@@ -199,7 +197,7 @@ mod tests {
         fs::write(dir.path().join(".gitignore"), "secret\n").unwrap();
         fs::write(dir.path().join("file.txt"), "x").unwrap();
 
-        let matcher = IgnoreMatcher::new(dir.path(), true, true, OsStr::new(".gitignore")).unwrap();
+        let matcher = IgnoreMatcher::new(dir.path(), true, true, OsStr::new(".gitignore"));
 
         assert!(matcher.is_ignored(Path::new(".git"), ft(&dir.path().join(".git"))));
         assert!(matcher.is_ignored(Path::new(".gitignore"), ft(&dir.path().join(".gitignore"))));
@@ -226,8 +224,7 @@ mod tests {
         fs::write(dir.path().join("subdir").join("keep.txt"), "keep").unwrap();
         fs::write(dir.path().join("subdir").join("secret.key"), "secret").unwrap();
 
-        let matcher =
-            IgnoreMatcher::new(dir.path(), false, false, OsStr::new(".gitignore")).unwrap();
+        let matcher = IgnoreMatcher::new(dir.path(), false, false, OsStr::new(".gitignore"));
 
         // These should NOT be ignored (they're outside subdir/'s scope)
         assert!(
@@ -271,8 +268,7 @@ mod tests {
         // A file at root level
         fs::write(dir.path().join("app.py"), "print('hello')").unwrap();
 
-        let matcher =
-            IgnoreMatcher::new(dir.path(), false, false, OsStr::new(".gitignore")).unwrap();
+        let matcher = IgnoreMatcher::new(dir.path(), false, false, OsStr::new(".gitignore"));
 
         // .venv/ itself is ignored by root .gitignore
         assert!(matcher.is_ignored(Path::new(".venv"), ft(&dir.path().join(".venv"))));

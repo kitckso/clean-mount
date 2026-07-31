@@ -4,6 +4,7 @@ use clap::Parser;
 use fuser::{BackgroundSession, Config, MountOption, SessionACL};
 use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::fs::DirEntry;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,37 +53,37 @@ fn main() -> Result<()> {
     match cli.command {
         None => {
             let source = cli.source.context("SOURCE is required")?;
-            cmd_mount(source, cli.mountpoint, &cli.opts, false)
+            cmd_mount(&source, cli.mountpoint, &cli.opts, false)
         }
         Some(Commands::Mount {
             source,
             mountpoint,
             opts,
             daemon,
-        }) => cmd_mount(source, mountpoint, &opts, daemon),
+        }) => cmd_mount(&source, mountpoint, &opts, daemon),
         Some(Commands::List {
             source,
             opts,
             tree,
             summary,
-        }) => cmd_list(source, &opts, tree, summary),
-        Some(Commands::Cp { source, dest, opts }) => cmd_cp(source, dest, &opts),
+        }) => cmd_list(&source, &opts, tree, summary),
+        Some(Commands::Cp { source, dest, opts }) => cmd_cp(&source, &dest, &opts),
         Some(Commands::Exec {
             source,
             command,
             opts,
-        }) => cmd_exec(source, &command, &opts),
-        Some(Commands::Open { source, opts }) => cmd_open(source, &opts),
+        }) => cmd_exec(&source, &command, &opts),
+        Some(Commands::Open { source, opts }) => cmd_open(&source, &opts),
         Some(Commands::Tar {
             source,
             output,
             opts,
-        }) => cmd_tar(source, output, &opts),
+        }) => cmd_tar(&source, &output, &opts),
         Some(Commands::Zip {
             source,
             output,
             opts,
-        }) => cmd_zip(source, output, &opts),
+        }) => cmd_zip(&source, &output, &opts),
         Some(Commands::Status) => cmd_status(),
         Some(Commands::Stop { pid, mountpoint }) => cmd_stop(pid, mountpoint),
         Some(Commands::Complete { shell, install }) => {
@@ -125,13 +126,15 @@ fn copy_to_clipboard(path: &Path, clipboard: bool) {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.take().unwrap().write_all(text.as_bytes())?;
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin.write_all(text.as_bytes())?;
+            }
             child.wait()
         });
     match result {
         Ok(status) if status.success() => eprintln!("path copied to clipboard"),
-        Ok(status) => eprintln!("warning: xclip exited with {}", status),
-        Err(e) => eprintln!("warning: failed to copy to clipboard: {}", e),
+        Ok(status) => eprintln!("warning: xclip exited with {status}"),
+        Err(e) => eprintln!("warning: failed to copy to clipboard: {e}"),
     }
 }
 
@@ -152,7 +155,7 @@ fn acl_from_opts(opts: &CommonOpts) -> SessionACL {
 
 fn build_fs(source: &Path, opts: &CommonOpts) -> Result<GitignoreMirrorFs> {
     GitignoreMirrorFs::new(
-        source.to_path_buf(),
+        source,
         Duration::from_secs(opts.ttl_secs),
         opts.hide_git,
         opts.hide_gitignore,
@@ -197,12 +200,12 @@ fn validate_mountpoint(mp: &Path, source: &Path) -> Result<PathBuf> {
 }
 
 fn cmd_mount(
-    source: PathBuf,
+    source: &Path,
     mountpoint: Option<PathBuf>,
     opts: &CommonOpts,
     daemon: bool,
 ) -> Result<()> {
-    let source = validate_source(&source)?;
+    let source = validate_source(source)?;
 
     if daemon {
         let mp = mountpoint.context("--daemon requires an explicit mountpoint")?;
@@ -223,13 +226,15 @@ fn cmd_mount(
                 }
                 redirect_stdio()?;
                 let registry = MountRegistry::new()?;
-                let _ = registry.register(&source, &mp, std::process::id());
+                if let Err(e) = registry.register(&source, &mp, std::process::id()) {
+                    tracing::warn!(error = %e, "failed to register daemon mount");
+                }
                 let session = mount_and_spawn(&source, opts, &mp);
-                let status: u8 = if session.is_ok() { 0 } else { 1 };
+                let status: u8 = u8::from(session.is_err());
                 unsafe {
                     let _ = libc::write(
                         write_fd,
-                        &status as *const u8 as *const libc::c_void,
+                        (&raw const status).cast::<libc::c_void>(),
                         std::mem::size_of::<u8>(),
                     );
                     libc::close(write_fd);
@@ -237,11 +242,15 @@ fn cmd_mount(
                 match session {
                     Ok(session) => {
                         wait_for_unmount(session);
-                        let _ = registry.unregister(std::process::id());
+                        if let Err(e) = registry.unregister(std::process::id()) {
+                            tracing::warn!(error = %e, "failed to unregister daemon mount");
+                        }
                         std::process::exit(0);
                     }
                     Err(e) => {
-                        let _ = registry.unregister(std::process::id());
+                        if let Err(e) = registry.unregister(std::process::id()) {
+                            tracing::warn!(error = %e, "failed to unregister daemon mount");
+                        }
                         tracing::error!("daemon mount failed: {e}");
                         std::process::exit(1);
                     }
@@ -253,7 +262,7 @@ fn cmd_mount(
                 let n = unsafe {
                     libc::read(
                         read_fd,
-                        status.as_mut_ptr() as *mut libc::c_void,
+                        status.as_mut_ptr().cast::<libc::c_void>(),
                         status.len(),
                     )
                 };
@@ -267,23 +276,20 @@ fn cmd_mount(
         }
     }
 
-    match mountpoint {
-        Some(mp) => {
-            let mp = validate_mountpoint(&mp, &source)?;
-            mount_blocking(source, opts, &mp)
-        }
-        None => {
-            let tmp = create_temp_mountpoint(&source)?;
-            println!("{}", tmp.path().display());
-            copy_to_clipboard(tmp.path(), opts.clipboard);
-            mount_blocking(source, opts, tmp.path())
-        }
+    if let Some(mp) = mountpoint {
+        let mp = validate_mountpoint(&mp, &source)?;
+        mount_blocking(&source, opts, &mp)
+    } else {
+        let tmp = create_temp_mountpoint(&source)?;
+        println!("{}", tmp.path().display());
+        copy_to_clipboard(tmp.path(), opts.clipboard);
+        mount_blocking(&source, opts, tmp.path())
     }
 }
 
-fn mount_blocking(source: PathBuf, opts: &CommonOpts, mountpoint: &Path) -> Result<()> {
-    let fs = build_fs(&source, opts)?;
-    let config = build_config(&source, opts);
+fn mount_blocking(source: &Path, opts: &CommonOpts, mountpoint: &Path) -> Result<()> {
+    let fs = build_fs(source, opts)?;
+    let config = build_config(source, opts);
 
     tracing::info!(
         source = %source.display(),
@@ -303,18 +309,19 @@ fn wait_for_unmount(session: BackgroundSession) {
     while !SIGINT_RECEIVED.load(Ordering::Acquire) && !session.guard.is_finished() {
         std::thread::sleep(Duration::from_millis(100));
     }
+    drop(session);
     tracing::info!("filesystem unmounted");
 }
 
-fn cmd_cp(source: PathBuf, dest: PathBuf, opts: &CommonOpts) -> Result<()> {
-    let source = validate_source(&source)?;
+fn cmd_cp(source: &Path, dest: &Path, opts: &CommonOpts) -> Result<()> {
+    let source = validate_source(source)?;
 
     if dest.exists() {
         bail!("destination already exists: {}", dest.display());
     }
 
     let mountpoint = create_temp_mountpoint(&source)?;
-    let _session = mount_and_spawn(&source, opts, mountpoint.path())?;
+    let session = mount_and_spawn(&source, opts, mountpoint.path())?;
     copy_to_clipboard(mountpoint.path(), opts.clipboard);
 
     tracing::info!(
@@ -326,34 +333,32 @@ fn cmd_cp(source: PathBuf, dest: PathBuf, opts: &CommonOpts) -> Result<()> {
     let status = Command::new("cp")
         .args(["-a", "--"])
         .arg(mountpoint.path())
-        .arg(&dest)
+        .arg(dest)
         .status()
         .context("failed to execute cp")?;
 
-    drop(_session);
+    drop(session);
 
     if !status.success() {
-        bail!("cp exited with status: {}", status);
+        bail!("cp exited with status: {status}");
     }
 
     tracing::info!("copy complete");
     Ok(())
 }
 
-fn cmd_exec(source: PathBuf, command: &[String], opts: &CommonOpts) -> Result<()> {
-    if command.is_empty() {
+fn cmd_exec(source: &Path, command: &[String], opts: &CommonOpts) -> Result<()> {
+    let Some((cmd, args)) = command.split_first() else {
         bail!("exec requires a command to run");
-    }
+    };
 
-    let source = validate_source(&source)?;
+    let source = validate_source(source)?;
 
     let mountpoint = create_temp_mountpoint(&source)?;
-    let _session = mount_and_spawn(&source, opts, mountpoint.path())?;
+    let session = mount_and_spawn(&source, opts, mountpoint.path())?;
     copy_to_clipboard(mountpoint.path(), opts.clipboard);
 
     let mount_path_str = mountpoint.path().to_string_lossy().into_owned();
-
-    let (cmd, args) = command.split_first().unwrap();
 
     let args: Vec<String> = args
         .iter()
@@ -376,17 +381,17 @@ fn cmd_exec(source: PathBuf, command: &[String], opts: &CommonOpts) -> Result<()
         .status()
         .context("failed to execute command")?;
 
-    drop(_session);
+    drop(session);
 
     if !status.success() {
-        bail!("command exited with status: {}", status);
+        bail!("command exited with status: {status}");
     }
 
     Ok(())
 }
 
-fn cmd_open(source: PathBuf, opts: &CommonOpts) -> Result<()> {
-    let source = validate_source(&source)?;
+fn cmd_open(source: &Path, opts: &CommonOpts) -> Result<()> {
+    let source = validate_source(source)?;
     let mountpoint = create_temp_mountpoint(&source)?;
     let mount_path = mountpoint.path().to_path_buf();
 
@@ -406,10 +411,10 @@ fn open_file_manager(path: &Path) {
     let _ = Command::new("xdg-open").arg(path).status();
 }
 
-fn cmd_tar(source: PathBuf, output: PathBuf, opts: &CommonOpts) -> Result<()> {
-    let source = validate_source(&source)?;
+fn cmd_tar(source: &Path, output: &Path, opts: &CommonOpts) -> Result<()> {
+    let source = validate_source(source)?;
     let mountpoint = create_temp_mountpoint(&source)?;
-    let _session = mount_and_spawn(&source, opts, mountpoint.path())?;
+    let session = mount_and_spawn(&source, opts, mountpoint.path())?;
 
     tracing::info!(
         source = %source.display(),
@@ -424,20 +429,20 @@ fn cmd_tar(source: PathBuf, output: PathBuf, opts: &CommonOpts) -> Result<()> {
         .status()
         .context("failed to execute tar")?;
 
-    drop(_session);
+    drop(session);
 
     if !status.success() {
-        bail!("tar exited with status: {}", status);
+        bail!("tar exited with status: {status}");
     }
 
     tracing::info!("tarball created");
     Ok(())
 }
 
-fn cmd_zip(source: PathBuf, output: PathBuf, opts: &CommonOpts) -> Result<()> {
-    let source = validate_source(&source)?;
+fn cmd_zip(source: &Path, output: &Path, opts: &CommonOpts) -> Result<()> {
+    let source = validate_source(source)?;
     let mountpoint = create_temp_mountpoint(&source)?;
-    let _session = mount_and_spawn(&source, opts, mountpoint.path())?;
+    let session = mount_and_spawn(&source, opts, mountpoint.path())?;
 
     tracing::info!(
         source = %source.display(),
@@ -452,10 +457,10 @@ fn cmd_zip(source: PathBuf, output: PathBuf, opts: &CommonOpts) -> Result<()> {
         .status()
         .context("failed to execute zip")?;
 
-    drop(_session);
+    drop(session);
 
     if !status.success() {
-        bail!("zip exited with status: {}", status);
+        bail!("zip exited with status: {status}");
     }
 
     tracing::info!("zip archive created");
@@ -493,16 +498,16 @@ fn cmd_complete_install(shell: Option<clap_complete::Shell>) -> Result<()> {
         _ => bail!("auto-install not supported for {shell}. Install manually by adding `eval \"$(clean-mount complete {shell})\"` to your shell's rc file."),
     };
 
-    let bin = std::env::args()
-        .next()
-        .map(|p| {
+    let bin = std::env::args().next().map_or_else(
+        || "clean-mount".to_string(),
+        |p| {
             Path::new(&p)
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned()
-        })
-        .unwrap_or_else(|| "clean-mount".to_string());
+        },
+    );
     let line = if explicit {
         format!("eval \"$({bin} complete {shell})\"")
     } else {
@@ -559,8 +564,7 @@ fn run_fusermount_u(mountpoint: &Path) -> Result<()> {
 
     let result = match fusermount {
         Ok(status) if status.success() => return Ok(()),
-        Ok(_) => Command::new("umount").arg(mountpoint).status(),
-        Err(_) => Command::new("umount").arg(mountpoint).status(),
+        Ok(_) | Err(_) => Command::new("umount").arg(mountpoint).status(),
     };
 
     match result {
@@ -685,30 +689,38 @@ impl ListCtx {
     }
 }
 
-fn cmd_list(source: PathBuf, opts: &CommonOpts, tree: bool, summary: bool) -> Result<()> {
-    let source = validate_source(&source)?;
+struct Lister<'a> {
+    matcher: &'a IgnoreMatcher,
+    max_depth: Option<u64>,
+    printed: u64,
+    ctx: Option<ListCtx>,
+}
+
+fn rel_join(rel: &Path, name: &OsStr) -> PathBuf {
+    if rel.as_os_str().is_empty() {
+        PathBuf::from(name)
+    } else {
+        rel.join(name)
+    }
+}
+
+fn cmd_list(source: &Path, opts: &CommonOpts, tree: bool, summary: bool) -> Result<()> {
+    let source = validate_source(source)?;
     let matcher = IgnoreMatcher::new(
         &source,
         opts.hide_git,
         opts.hide_gitignore,
         OsStr::new(&opts.ignore_file),
-    )
-    .context("failed to initialize ignore matcher")?;
+    );
 
-    let max_depth = if tree { None } else { Some(0) };
-
-    let mut printed = 0;
-    let mut ctx = summary.then(ListCtx::new);
-    let truncated = list_tree(
-        &source,
-        Path::new(""),
-        &matcher,
-        "",
-        &mut printed,
-        max_depth,
-        0,
-        ctx.as_mut(),
-    )?;
+    let mut lister = Lister {
+        matcher: &matcher,
+        max_depth: if tree { None } else { Some(0) },
+        printed: 0,
+        ctx: summary.then(ListCtx::new),
+    };
+    let truncated = lister.run(&source)?;
+    let Lister { ctx, printed, .. } = lister;
 
     if let Some(ctx) = ctx {
         if printed < ctx.shown {
@@ -728,7 +740,7 @@ fn cmd_list(source: PathBuf, opts: &CommonOpts, tree: bool, summary: bool) -> Re
             );
         }
     } else if truncated {
-        println!("... (truncated at {} files)", PRINT_LIMIT);
+        println!("... (truncated at {PRINT_LIMIT} files)");
     }
 
     Ok(())
@@ -740,109 +752,93 @@ fn add_size(md: &std::fs::Metadata, seen: &mut HashSet<(u64, u64)>, total: &mut 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn list_tree(
-    abs_dir: &Path,
-    rel: &Path,
-    matcher: &IgnoreMatcher,
-    indent: &str,
-    printed: &mut u64,
-    max_depth: Option<u64>,
-    depth: u64,
-    mut ctx: Option<&mut ListCtx>,
-) -> Result<bool> {
-    let mut entries: Vec<_> = std::fs::read_dir(abs_dir)?.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
-
-    for entry in &entries {
-        if *printed >= PRINT_LIMIT {
-            if let Some(ctx) = ctx {
-                let name = entry.file_name();
-                let child_rel = if rel.as_os_str().is_empty() {
-                    PathBuf::from(name.clone())
-                } else {
-                    rel.join(&name)
-                };
-                let ft = entry.file_type()?;
-                if matcher.is_ignored(&child_rel, Some(ft)) {
-                    if ft.is_dir() {
-                        count_ignored(&entry.path(), &mut ctx.ignored)?;
-                    } else {
-                        ctx.ignored += 1;
-                    }
-                } else if ft.is_dir() {
-                    if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                        add_size(&md, &mut ctx.seen, &mut ctx.size);
-                    }
-                    count_remaining(&entry.path(), &child_rel, matcher, ctx)?;
-                } else {
-                    ctx.shown += 1;
-                    if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                        add_size(&md, &mut ctx.seen, &mut ctx.size);
-                    }
-                }
-            }
-            return Ok(true);
-        }
-
-        let name = entry.file_name();
-        let child_rel = if rel.as_os_str().is_empty() {
-            PathBuf::from(name.clone())
-        } else {
-            rel.join(&name)
-        };
-        let ft = entry.file_type()?;
-        let is_dir = ft.is_dir();
-        let is_symlink = ft.is_symlink();
-
-        if matcher.is_ignored(&child_rel, Some(ft)) {
-            if let Some(ref mut c) = ctx {
-                if is_dir {
-                    count_ignored(&entry.path(), &mut c.ignored)?;
-                } else {
-                    c.ignored += 1;
-                }
-            }
-            continue;
-        }
-
-        if is_dir {
-            println!("{}{}/", indent, name.to_string_lossy());
-            if let Some(ref mut c) = ctx {
-                if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                    add_size(&md, &mut c.seen, &mut c.size);
-                }
-            }
-            if max_depth.is_none_or(|md| depth < md) {
-                if list_tree(
-                    &entry.path(),
-                    &child_rel,
-                    matcher,
-                    &format!("{}  ", indent),
-                    printed,
-                    max_depth,
-                    depth + 1,
-                    ctx.as_deref_mut(),
-                )? {
-                    return Ok(true);
-                }
-            } else if let Some(ref mut c) = ctx {
-                count_remaining(&entry.path(), &child_rel, matcher, c)?;
-            }
-        } else {
-            *printed += 1;
-            let suffix = if is_symlink { "@" } else { "" };
-            println!("{}{}{}", indent, name.to_string_lossy(), suffix);
-            if let Some(ref mut c) = ctx {
-                c.shown += 1;
-                if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
-                    add_size(&md, &mut c.seen, &mut c.size);
-                }
-            }
-        }
+impl Lister<'_> {
+    fn run(&mut self, root: &Path) -> Result<bool> {
+        self.list_tree(root, Path::new(""), "", 0)
     }
 
-    Ok(false)
+    fn list_tree(&mut self, abs_dir: &Path, rel: &Path, indent: &str, depth: u64) -> Result<bool> {
+        let mut entries: Vec<_> = std::fs::read_dir(abs_dir)?.filter_map(Result::ok).collect();
+        entries.sort_by_key(DirEntry::file_name);
+
+        for entry in &entries {
+            if self.printed >= PRINT_LIMIT {
+                if let Some(ctx) = &mut self.ctx {
+                    let name = entry.file_name();
+                    let child_rel = rel_join(rel, &name);
+                    let ft = entry.file_type()?;
+                    if self.matcher.is_ignored(&child_rel, Some(ft)) {
+                        if ft.is_dir() {
+                            count_ignored(&entry.path(), &mut ctx.ignored)?;
+                        } else {
+                            ctx.ignored += 1;
+                        }
+                    } else if ft.is_dir() {
+                        if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                            add_size(&md, &mut ctx.seen, &mut ctx.size);
+                        }
+                        count_remaining(&entry.path(), &child_rel, self.matcher, ctx)?;
+                    } else {
+                        ctx.shown += 1;
+                        if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                            add_size(&md, &mut ctx.seen, &mut ctx.size);
+                        }
+                    }
+                }
+                return Ok(true);
+            }
+
+            let name = entry.file_name();
+            let child_rel = rel_join(rel, &name);
+            let ft = entry.file_type()?;
+            let is_dir = ft.is_dir();
+            let is_symlink = ft.is_symlink();
+
+            if self.matcher.is_ignored(&child_rel, Some(ft)) {
+                if let Some(c) = &mut self.ctx {
+                    if is_dir {
+                        count_ignored(&entry.path(), &mut c.ignored)?;
+                    } else {
+                        c.ignored += 1;
+                    }
+                }
+                continue;
+            }
+
+            if is_dir {
+                println!("{}{}/", indent, name.to_string_lossy());
+                if let Some(c) = &mut self.ctx {
+                    if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                        add_size(&md, &mut c.seen, &mut c.size);
+                    }
+                }
+                if self.max_depth.is_none_or(|md| depth < md) {
+                    if self.list_tree(
+                        &entry.path(),
+                        &child_rel,
+                        &format!("{indent}  "),
+                        depth + 1,
+                    )? {
+                        return Ok(true);
+                    }
+                } else if let Some(c) = &mut self.ctx {
+                    count_remaining(&entry.path(), &child_rel, self.matcher, c)?;
+                }
+            } else {
+                self.printed += 1;
+                let suffix = if is_symlink { "@" } else { "" };
+                println!("{}{}{}", indent, name.to_string_lossy(), suffix);
+                if let Some(c) = &mut self.ctx {
+                    c.shown += 1;
+                    if let Ok(md) = std::fs::symlink_metadata(entry.path()) {
+                        add_size(&md, &mut c.seen, &mut c.size);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
 }
 
 fn count_remaining(
@@ -908,6 +904,6 @@ fn format_size(bytes: u64) -> String {
     } else if bytes >= KB {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }

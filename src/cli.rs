@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[derive(Args, Debug, Clone)]
 pub struct CommonOpts {
     /// Allow other users to access the mount.
-    /// Usually requires user_allow_other in /etc/fuse.conf.
+    /// Usually requires `user_allow_other` in /etc/fuse.conf.
     #[arg(long)]
     pub allow_other: bool,
 
