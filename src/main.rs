@@ -15,7 +15,7 @@ use tracing_subscriber::EnvFilter;
 static SIGINT_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn handle_sigint(_: i32) {
-    SIGINT_RECEIVED.store(true, Ordering::SeqCst);
+    SIGINT_RECEIVED.store(true, Ordering::Release);
 }
 
 mod cli;
@@ -23,10 +23,12 @@ mod fs;
 mod ignore_matcher;
 mod inode;
 mod metadata;
+mod registry;
 
 use crate::cli::{Cli, Commands, CommonOpts};
 use crate::fs::GitignoreMirrorFs;
 use crate::ignore_matcher::IgnoreMatcher;
+use crate::registry::MountRegistry;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -50,13 +52,14 @@ fn main() -> Result<()> {
     match cli.command {
         None => {
             let source = cli.source.context("SOURCE is required")?;
-            cmd_mount(source, cli.mountpoint, &cli.opts)
+            cmd_mount(source, cli.mountpoint, &cli.opts, false)
         }
         Some(Commands::Mount {
             source,
             mountpoint,
             opts,
-        }) => cmd_mount(source, mountpoint, &opts),
+            daemon,
+        }) => cmd_mount(source, mountpoint, &opts, daemon),
         Some(Commands::List {
             source,
             opts,
@@ -80,6 +83,8 @@ fn main() -> Result<()> {
             output,
             opts,
         }) => cmd_zip(source, output, &opts),
+        Some(Commands::Status) => cmd_status(),
+        Some(Commands::Stop { pid, mountpoint }) => cmd_stop(pid, mountpoint),
         Some(Commands::Complete { shell, install }) => {
             if install {
                 cmd_complete_install(shell)?;
@@ -172,26 +177,99 @@ fn build_config(source: &Path, opts: &CommonOpts) -> Config {
     config
 }
 
-fn cmd_mount(source: PathBuf, mountpoint: Option<PathBuf>, opts: &CommonOpts) -> Result<()> {
+fn validate_mountpoint(mp: &Path, source: &Path) -> Result<PathBuf> {
+    let mp = mp
+        .canonicalize()
+        .context("failed to canonicalize mountpoint directory")?;
+    if !mp.is_dir() {
+        bail!("mountpoint must be an existing directory: {}", mp.display());
+    }
+    let mut entries = mp
+        .read_dir()
+        .context("failed to read mountpoint directory")?;
+    if entries.next().is_some() {
+        bail!("mountpoint must be empty before mounting: {}", mp.display());
+    }
+    if mp.starts_with(source) || source.starts_with(&mp) {
+        bail!("source and mountpoint must not be nested inside each other");
+    }
+    Ok(mp)
+}
+
+fn cmd_mount(
+    source: PathBuf,
+    mountpoint: Option<PathBuf>,
+    opts: &CommonOpts,
+    daemon: bool,
+) -> Result<()> {
     let source = validate_source(&source)?;
+
+    if daemon {
+        let mp = mountpoint.context("--daemon requires an explicit mountpoint")?;
+        let mp = validate_mountpoint(&mp, &source)?;
+
+        let mut fds = [0; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            bail!("failed to create sync pipe");
+        }
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+
+        match unsafe { libc::fork() } {
+            -1 => bail!("fork failed"),
+            0 => {
+                unsafe {
+                    libc::close(read_fd);
+                    libc::setsid();
+                }
+                redirect_stdio()?;
+                let registry = MountRegistry::new()?;
+                let _ = registry.register(&source, &mp, std::process::id());
+                let session = mount_and_spawn(&source, opts, &mp);
+                let status: u8 = if session.is_ok() { 0 } else { 1 };
+                unsafe {
+                    let _ = libc::write(
+                        write_fd,
+                        &status as *const u8 as *const libc::c_void,
+                        std::mem::size_of::<u8>(),
+                    );
+                    libc::close(write_fd);
+                }
+                match session {
+                    Ok(session) => {
+                        wait_for_unmount(session);
+                        let _ = registry.unregister(std::process::id());
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        let _ = registry.unregister(std::process::id());
+                        tracing::error!("daemon mount failed: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            pid => {
+                unsafe { libc::close(write_fd) };
+                let mut status = [0u8; 1];
+                let n = unsafe {
+                    libc::read(
+                        read_fd,
+                        status.as_mut_ptr() as *mut libc::c_void,
+                        status.len(),
+                    )
+                };
+                unsafe { libc::close(read_fd) };
+                if n == 1 && status[0] == 0 {
+                    println!("{pid}");
+                    std::process::exit(0);
+                }
+                bail!("daemon failed to mount");
+            }
+        }
+    }
 
     match mountpoint {
         Some(mp) => {
-            let mp = mp
-                .canonicalize()
-                .context("failed to canonicalize mountpoint directory")?;
-            if !mp.is_dir() {
-                bail!("mountpoint must be an existing directory: {}", mp.display());
-            }
-            let mut entries = mp
-                .read_dir()
-                .context("failed to read mountpoint directory")?;
-            if entries.next().is_some() {
-                bail!("mountpoint must be empty before mounting: {}", mp.display());
-            }
-            if mp.starts_with(&source) || source.starts_with(&mp) {
-                bail!("source and mountpoint must not be nested inside each other");
-            }
+            let mp = validate_mountpoint(&mp, &source)?;
             mount_blocking(source, opts, &mp)
         }
         None => {
@@ -216,14 +294,16 @@ fn mount_blocking(source: PathBuf, opts: &CommonOpts, mountpoint: &Path) -> Resu
         "mounting read-only gitignore-filtered FUSE filesystem"
     );
 
-    let _session = fuser::spawn_mount(fs, mountpoint, &config).context("FUSE mount failed")?;
+    let session = fuser::spawn_mount(fs, mountpoint, &config).context("FUSE mount failed")?;
+    wait_for_unmount(session);
+    Ok(())
+}
 
-    while !SIGINT_RECEIVED.load(Ordering::Relaxed) {
+fn wait_for_unmount(session: BackgroundSession) {
+    while !SIGINT_RECEIVED.load(Ordering::Acquire) && !session.guard.is_finished() {
         std::thread::sleep(Duration::from_millis(100));
     }
-
     tracing::info!("filesystem unmounted");
-    Ok(())
 }
 
 fn cmd_cp(source: PathBuf, dest: PathBuf, opts: &CommonOpts) -> Result<()> {
@@ -310,16 +390,14 @@ fn cmd_open(source: PathBuf, opts: &CommonOpts) -> Result<()> {
     let mountpoint = create_temp_mountpoint(&source)?;
     let mount_path = mountpoint.path().to_path_buf();
 
-    let _session = mount_and_spawn(&source, opts, &mount_path)?;
+    let session = mount_and_spawn(&source, opts, &mount_path)?;
     copy_to_clipboard(&mount_path, opts.clipboard);
 
     println!("{}", mount_path.display());
 
     open_file_manager(&mount_path);
 
-    while !SIGINT_RECEIVED.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    wait_for_unmount(session);
 
     Ok(())
 }
@@ -458,6 +536,121 @@ fn cmd_complete_install(shell: Option<clap_complete::Shell>) -> Result<()> {
         "run `source {}` or restart your shell to activate",
         rc_file.display()
     );
+    Ok(())
+}
+
+fn redirect_stdio() -> Result<()> {
+    use std::os::unix::io::IntoRawFd;
+    let devnull = std::fs::File::open("/dev/null")?;
+    let fd = devnull.into_raw_fd();
+    unsafe {
+        libc::dup2(fd, 0);
+        libc::dup2(fd, 1);
+        libc::dup2(fd, 2);
+        libc::close(fd);
+    }
+    Ok(())
+}
+
+fn run_fusermount_u(mountpoint: &Path) -> Result<()> {
+    let fusermount = Command::new("fusermount3")
+        .args(["-u", &mountpoint.to_string_lossy()])
+        .status();
+
+    let result = match fusermount {
+        Ok(status) if status.success() => return Ok(()),
+        Ok(_) => Command::new("umount").arg(mountpoint).status(),
+        Err(_) => Command::new("umount").arg(mountpoint).status(),
+    };
+
+    match result {
+        Ok(status) if status.success() => Ok(()),
+        Ok(_) => {
+            if !is_mounted(mountpoint) {
+                return Ok(());
+            }
+            bail!("unmount failed; the mount may be in use");
+        }
+        Err(e) => Err(e).context("failed to run fusermount3 or umount"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_mounted(path: &Path) -> bool {
+    let Ok(content) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return true;
+    };
+    let path_str = path.to_string_lossy();
+    content
+        .lines()
+        .any(|line| line.split_whitespace().nth(4) == Some(path_str.as_ref()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_mounted(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut mntbufp: *mut libc::statfs = std::ptr::null_mut();
+    let count = unsafe { libc::getmntinfo(&mut mntbufp, libc::MNT_NOWAIT) };
+    if count <= 0 {
+        return true;
+    }
+    let path_bytes = path.as_os_str().as_bytes();
+    unsafe {
+        for i in 0..count {
+            let name = std::ffi::CStr::from_ptr((*mntbufp.add(i as usize)).f_mntonname.as_ptr());
+            if name.to_bytes() == path_bytes {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn cmd_status() -> Result<()> {
+    let registry = MountRegistry::new()?;
+    let entries = registry.list()?;
+    if entries.is_empty() {
+        println!("no active mounts");
+        return Ok(());
+    }
+    println!(
+        "{:>6}  {:<24}  {:<40}  UPTIME",
+        "PID", "SOURCE", "MOUNTPOINT"
+    );
+    for e in &entries {
+        println!(
+            "{:>6}  {:<24}  {:<40}  {}",
+            e.pid,
+            e.source,
+            e.mountpoint,
+            e.uptime_str()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_stop(pid: Option<u32>, mountpoint: Option<PathBuf>) -> Result<()> {
+    let registry = MountRegistry::new()?;
+
+    if let Some(pid) = pid {
+        let entry = registry
+            .lookup_by_pid(pid)?
+            .with_context(|| format!("no registered mount found for PID {pid}"))?;
+        run_fusermount_u(Path::new(&entry.mountpoint))?;
+        registry.unregister(pid)?;
+    } else if let Some(mp) = mountpoint {
+        let mp = mp
+            .canonicalize()
+            .context("failed to canonicalize mountpoint directory")?;
+        run_fusermount_u(&mp)?;
+        for entry in registry.lookup_by_mountpoint(&mp)? {
+            registry.unregister(entry.pid)?;
+        }
+    } else {
+        bail!("use --pid <PID> or provide a mountpoint");
+    }
+
     Ok(())
 }
 

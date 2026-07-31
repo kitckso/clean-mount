@@ -71,11 +71,27 @@ pub enum Commands {
     /// Mount the filtered view (persistent, for interactive use).
     /// With MOUNTPOINT: mount at that directory.
     /// Without: create a temp directory and print its path.
+    /// Use --daemon to run in the background.
     Mount {
         source: PathBuf,
         mountpoint: Option<PathBuf>,
         #[command(flatten)]
         opts: CommonOpts,
+        /// Run the mount in the background. Requires an explicit mountpoint.
+        #[arg(long)]
+        daemon: bool,
+    },
+
+    /// List active daemon mounts.
+    Status,
+
+    /// Unmount a running daemon mount by PID or mountpoint.
+    Stop {
+        /// PID of the daemon to stop.
+        #[arg(long, conflicts_with = "mountpoint")]
+        pid: Option<u32>,
+        /// Mountpoint to unmount.
+        mountpoint: Option<PathBuf>,
     },
 
     /// Open the filtered view in the file manager.

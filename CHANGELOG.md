@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.4] - 2026-07-31
+
+### Added
+
+- `mount --daemon` — run the mount as a background daemon (requires explicit mountpoint).
+- `status` — list active daemon mounts with PID, source, mountpoint, and uptime.
+- `stop --pid <PID>` / `stop <MOUNTPOINT>` — unmount a running daemon mount.
+- Auto-exit when mount is unmounted externally (via `fusermount3 -u` or `umount`).
+- Mount registry at `$XDG_RUNTIME_DIR/clean-mount/mounts/<pid>.mount` for tracking daemon mounts.
+
 ## [0.1.3] - 2026-07-30
 
 ### Added

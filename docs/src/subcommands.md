@@ -2,7 +2,9 @@
 
 | Subcommand | What it does |
 |---|---|
-| `mount SOURCE [MOUNTPOINT]` | Mount (omit mountpoint for auto temp dir + print path) |
+| `mount SOURCE [MOUNTPOINT]` | Mount (omit mountpoint for auto temp dir + print path). Use `--daemon` to run in background. |
+| `status` | List active daemon mounts (PID, source, mountpoint, uptime) |
+| `stop --pid <PID>` / `stop <MOUNTPOINT>` | Unmount a running daemon mount by PID or mountpoint |
 | `open SOURCE` | Mount + open in file manager |
 | `cp SOURCE DEST` | Mount, `cp -a` the filtered view to DEST, unmount |
 | `list SOURCE` | Preview the filtered view without mounting (flat listing, no summary) |

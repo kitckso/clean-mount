@@ -45,8 +45,10 @@ clean-mount open /path/to/project
 ## Subcommands
 
 | Subcommand | What it does |
-|---|---|
-| `mount SOURCE [MOUNTPOINT]` | Mount (omit mountpoint for auto temp dir + print path) |
+|---|---|---|
+| `mount SOURCE [MOUNTPOINT]` | Mount (omit mountpoint for auto temp dir + print path). Use `--daemon` to run in background. |
+| `status` | List active daemon mounts (PID, source, mountpoint, uptime) |
+| `stop --pid <PID>` / `stop <MOUNTPOINT>` | Unmount a running daemon mount by PID or mountpoint |
 | `open SOURCE` | Mount + open in file manager |
 | `cp SOURCE DEST` | Mount, `cp -a` the filtered view to DEST, unmount |
 | `list SOURCE` | Preview the filtered view without mounting (flat listing, no summary) |
@@ -211,6 +213,38 @@ clean-mount mount /path/to/project /tmp/mirror
 
 Then inspect, browse, or run tools against `/tmp/mirror` from another terminal.
 
+Use `--daemon` to run the mount in the background (requires an explicit mountpoint):
+
+```bash
+clean-mount mount /path/to/project /tmp/mirror --daemon
+# Returns immediately, prints PID
+```
+
+This behaves like a classic daemon — the process forks, detaches from the terminal, and
+keeps the mount alive. The mount also auto-exits when unmounted externally.
+
+### `status` — list active daemon mounts
+
+```bash
+clean-mount status
+# PID   SOURCE                    MOUNTPOINT                               UPTIME
+# 12345 /home/user/project       /tmp/mirror                               2h 15m
+```
+
+Shows all running daemon mounts registered with a PID file. Dead PIDs are filtered out.
+
+### `stop` — unmount a daemon mount
+
+```bash
+# By PID
+clean-mount stop --pid 12345
+
+# By mountpoint
+clean-mount stop /tmp/mirror
+```
+
+Internally runs `fusermount3 -u` (or `umount` as fallback) against the resolved mountpoint.
+
 ## Features
 
 - Mirrors an existing directory — fully transparent passthrough
@@ -222,6 +256,9 @@ Then inspect, browse, or run tools against `/tmp/mirror` from another terminal.
 - Override ignore file with `--ignore-file` (e.g. `.dockerignore`)
 - Configurable attribute/entry TTL (`--ttl-secs`)
 - Optional `--clipboard` to copy temp mount path to clipboard
+- `--daemon` mode for background mounts with PID file tracking
+- `status` and `stop` subcommands to manage daemon mounts
+- Auto-exit when mount is unmounted externally
 - Logging via `RUST_LOG`
 
 > **Note:** Ignore rules are loaded at startup. If rules change, remount to reload them.
@@ -322,6 +359,9 @@ clean-mount mount /path/to/project
 # Or mount at a specific directory
 mkdir -p /tmp/mirror
 clean-mount mount /path/to/project /tmp/mirror
+
+# Daemon mode: runs in background, prints PID
+clean-mount mount /path/to/project /tmp/mirror --daemon
 ```
 
 Use another terminal to inspect the filtered view:
@@ -334,12 +374,14 @@ cd /tmp/mirror && zip -r ~/filtered.zip .
 
 ### Unmount
 
-| Method                | Command                       |
-| --------------------- | ----------------------------- |
-| Foreground process   | Press `Ctrl+C`                |
-| Manual (Linux)        | `fusermount3 -u /tmp/mirror`  |
-| Manual (macOS)        | `umount /tmp/mirror`          |
-| Force unmount         | `fusermount3 -uz /tmp/mirror` |
+| Method                | Command                             |
+| --------------------- | ----------------------------------- |
+| Foreground process   | Press `Ctrl+C`                      |
+| Daemon mount         | `clean-mount stop --pid <PID>`      |
+| Daemon mount         | `clean-mount stop /tmp/mirror`      |
+| Manual (Linux)        | `fusermount3 -u /tmp/mirror`        |
+| Manual (macOS)        | `umount /tmp/mirror`                |
+| Force unmount         | `fusermount3 -uz /tmp/mirror`       |
 
 ### Common Options
 

@@ -4,6 +4,8 @@
 - [Installation](install.md)
 - [Subcommands](subcommands.md)
   - [mount](subcommands/mount.md)
+  - [status](subcommands/status.md)
+  - [stop](subcommands/stop.md)
   - [cp](subcommands/cp.md)
   - [list](subcommands/list.md)
   - [tar](subcommands/tar.md)
