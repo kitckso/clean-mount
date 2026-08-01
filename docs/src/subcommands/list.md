@@ -36,6 +36,20 @@ package.json
 12 files (847 ignored, 512.7 MB total)
 ```
 
+```bash
+# Show everything, ignoring any ignore rules
+clean-mount list ~/my-node-project --no-ignore
+
+# Hide extra paths on top of the ignore file (overrides it)
+clean-mount list ~/my-node-project --exclude '*.min.js' --exclude build/
+
+# Keep a gitignored file visible
+clean-mount list ~/my-node-project --include keep.env
+
+# Ad-hoc filtering without any ignore file
+clean-mount list ~/my-node-project --no-ignore --exclude '*.log' --exclude .venv
+```
+
 ## Options
 
 | Flag | Description |
@@ -43,4 +57,4 @@ package.json
 | `--tree` / `-t` | Show full recursive directory tree |
 | `--summary` / `-s` | Show file/ignored/size summary |
 
-All [common options](../common-options.md) are also supported.
+All [common options](../common-options.md) are also supported. `--exclude`/`--include` take gitignore-style patterns (repeatable) and override the ignore file; pair `--no-ignore` with `--exclude` for ad-hoc filtering without any ignore file.

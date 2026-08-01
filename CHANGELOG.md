@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.5] - 2026-08-01
+
+### Added
+
+- `--no-ignore` — disable ignore-file processing entirely (show all files); pairs with `--exclude`/`--include` for ad-hoc filtering without any ignore file.
+- `--exclude <PATTERN>` — hide additional gitignore-style paths on top of (or instead of) the ignore file; overrides the ignore file and `--include`. Repeatable.
+- `--include <PATTERN>` — keep paths visible even when the ignore file hides them; overridden by `--exclude`. Repeatable.
+
+### Changed
+
+- `--ignore-file <FILE>` now errors if the requested ignore file is not found anywhere in the source tree.
+- Missing default `.gitignore` no longer fails silently: a warning is logged stating that nothing will be filtered.
+
 ## [0.1.4] - 2026-07-31
 
 ### Added

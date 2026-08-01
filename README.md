@@ -127,7 +127,21 @@ clean-mount list /path/to/project --hide-git --hide-gitignore
 
 # Use a different ignore file (e.g. .dockerignore)
 clean-mount list /path/to/project --ignore-file .dockerignore
+
+# Show everything, ignoring any ignore rules
+clean-mount list /path/to/project --no-ignore
+
+# Hide extra paths on top of the ignore file (overrides it)
+clean-mount list /path/to/project --exclude '*.min.js' --exclude build/
+
+# Keep a gitignored file visible
+clean-mount list /path/to/project --include keep.env
+
+# Ad-hoc filtering without any ignore file
+clean-mount list /path/to/project --no-ignore --exclude '*.log' --exclude .venv
 ```
+
+`--exclude` and `--include` accept gitignore-style patterns and can be repeated. Precedence (highest to lowest): `--hide-git`/`--hide-gitignore`, `--exclude`, `--include`, then the ignore file. `--no-ignore` disables only the ignore-file rules, so it combines naturally with `--exclude` (or `--include`) for one-off filtering when no `.gitignore` exists.
 
 Example output:
 
@@ -253,7 +267,10 @@ Internally runs `fusermount3 -u` (or `umount` as fallback) against the resolved 
 - Symlink escape protection
 - Optional `--hide-git` to hide `.git` directories
 - Optional `--hide-gitignore` to hide `.gitignore` files
-- Override ignore file with `--ignore-file` (e.g. `.dockerignore`)
+- Override ignore file with `--ignore-file` (e.g. `.dockerignore`); errors if the file is not found
+- `--no-ignore` to disable ignore-file processing entirely (show all files); pair it with `--exclude` to filter ad-hoc without any ignore file
+- `--exclude <PATTERN>` to hide extra paths on top of (or instead of) the ignore file
+- `--include <PATTERN>` to keep paths visible even when the ignore file hides them
 - Configurable attribute/entry TTL (`--ttl-secs`)
 - Optional `--clipboard` to copy temp mount path to clipboard
 - `--daemon` mode for background mounts with PID file tracking
@@ -395,7 +412,10 @@ All subcommands accept these options. `list` also accepts `--tree`/`-t` and `--s
 | `--ttl-secs <SECONDS>`  | Entry and attribute TTL (default: 1)                              |
 | `--hide-git`            | Always hide `.git` files/directories                              |
 | `--hide-gitignore`      | Always hide `.gitignore` files                                    |
-| `--ignore-file <NAME>`  | Ignore file to use instead of `.gitignore` (default: `.gitignore`) |
+| `--ignore-file <NAME>`  | Ignore file to use instead of `.gitignore` (default: `.gitignore`); errors if not found |
+| `--no-ignore`           | Disable ignore-file processing entirely (show all files); pair with `--exclude` to filter ad-hoc without an ignore file |
+| `--exclude <PATTERN>`   | Extra gitignore-style pattern(s) to hide; overrides the ignore file and `--include`. Repeatable |
+| `--include <PATTERN>`   | Gitignore-style pattern(s) to keep visible even if the ignore file hides them; overridden by `--exclude`. Repeatable |
 | `--clipboard`           | Copy the auto temp mount path to clipboard                          |
 | `--tree` / `-t`         | Show recursive directory tree (list only)                           |
 | `--summary` / `-s`      | Show file/ignored/size summary (list only)                          |

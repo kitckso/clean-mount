@@ -157,9 +157,7 @@ fn build_fs(source: &Path, opts: &CommonOpts) -> Result<GitignoreMirrorFs> {
     GitignoreMirrorFs::new(
         source,
         Duration::from_secs(opts.ttl_secs),
-        opts.hide_git,
-        opts.hide_gitignore,
-        &opts.ignore_file,
+        &opts.ignore_config(),
     )
     .context("failed to initialize filesystem")
 }
@@ -706,12 +704,9 @@ fn rel_join(rel: &Path, name: &OsStr) -> PathBuf {
 
 fn cmd_list(source: &Path, opts: &CommonOpts, tree: bool, summary: bool) -> Result<()> {
     let source = validate_source(source)?;
-    let matcher = IgnoreMatcher::new(
-        &source,
-        opts.hide_git,
-        opts.hide_gitignore,
-        OsStr::new(&opts.ignore_file),
-    );
+    let config = opts.ignore_config();
+    let matcher = IgnoreMatcher::new(&source, &config)?;
+    matcher.ensure_ignore_file(&config, &source)?;
 
     let mut lister = Lister {
         matcher: &matcher,

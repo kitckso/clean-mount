@@ -1,5 +1,7 @@
+use crate::ignore_matcher::IgnoreConfig;
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 #[derive(Args, Debug, Clone)]
@@ -31,13 +33,57 @@ pub struct CommonOpts {
     pub hide_gitignore: bool,
 
     /// Ignore file name (default: .gitignore). Override to use a different file,
-    /// e.g. .dockerignore or .gitignore.extra.
-    #[arg(long, default_value = ".gitignore")]
-    pub ignore_file: String,
+    /// e.g. .dockerignore or .gitignore.extra. Errors if no such file is found
+    /// in the source tree.
+    #[arg(long, conflicts_with = "no_ignore")]
+    pub ignore_file: Option<String>,
+
+    /// Disable ignore-file processing entirely (show all files).
+    #[arg(long)]
+    pub no_ignore: bool,
+
+    /// Additional gitignore-style pattern(s) to hide, overriding the ignore
+    /// file (and --include). May be repeated. Also usable with --no-ignore
+    /// for ad-hoc excludes without an ignore file.
+    #[arg(long, value_name = "PATTERN")]
+    pub exclude: Vec<String>,
+
+    /// Gitignore-style pattern(s) to keep visible even if the ignore file
+    /// hides them. May be repeated. Overridden by --exclude.
+    #[arg(long, value_name = "PATTERN")]
+    pub include: Vec<String>,
 
     /// Copy the temp mount path to clipboard.
     #[arg(long)]
     pub clipboard: bool,
+}
+
+const DEFAULT_IGNORE_FILE: &str = ".gitignore";
+
+impl CommonOpts {
+    /// Returns the ignore file name and whether its presence is required.
+    /// A `None` name means ignore-file processing is disabled.
+    pub fn ignore_file_config(&self) -> (Option<&str>, bool) {
+        if self.no_ignore {
+            (None, false)
+        } else {
+            let name = self.ignore_file.as_deref().unwrap_or(DEFAULT_IGNORE_FILE);
+            (Some(name), self.ignore_file.is_some())
+        }
+    }
+
+    /// Bundles all ignore-related options for matcher construction.
+    pub fn ignore_config(&self) -> IgnoreConfig<'_> {
+        let (ignore_file, require_ignore_file) = self.ignore_file_config();
+        IgnoreConfig {
+            hide_git: self.hide_git,
+            hide_gitignore: self.hide_gitignore,
+            ignore_file_name: ignore_file.map(OsStr::new),
+            require_ignore_file,
+            exclude: &self.exclude,
+            include: &self.include,
+        }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -47,7 +93,10 @@ pub struct CommonOpts {
     about = "Mount a read-only mirror of a directory while hiding files matched by ignore rules (default: .gitignore).",
     long_about = "clean-mount creates a FUSE filesystem that mirrors an existing directory, \
                   filtering out files and directories matched by ignore rules (default: .gitignore). \
-                  Use --ignore-file to use a different ignore file (e.g. .dockerignore). \
+                  Use --ignore-file to use a different ignore file (e.g. .dockerignore), \
+                  or --no-ignore to disable ignore-file processing entirely. \
+                  --exclude hides additional paths (and works without any ignore file), \
+                  while --include keeps paths visible even if an ignore file hides them. \
                   This makes ignored files appear nonexistent to tools like ls, find, zip, tar, \
                   editors, and AI agents.",
     args_conflicts_with_subcommands = true

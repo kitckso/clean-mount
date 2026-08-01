@@ -1,4 +1,4 @@
-use crate::ignore_matcher::IgnoreMatcher;
+use crate::ignore_matcher::{IgnoreConfig, IgnoreMatcher};
 use crate::inode::{normalize_rel, InodeTable};
 use crate::metadata::{file_attr_from_metadata, file_type_from};
 use fuser::{
@@ -37,16 +37,10 @@ pub struct GitignoreMirrorFs {
 }
 
 impl GitignoreMirrorFs {
-    pub fn new(
-        source: &Path,
-        ttl: Duration,
-        hide_git: bool,
-        hide_gitignore: bool,
-        ignore_file: &str,
-    ) -> anyhow::Result<Self> {
+    pub fn new(source: &Path, ttl: Duration, config: &IgnoreConfig) -> anyhow::Result<Self> {
         let source = source.canonicalize()?;
-        let ignores =
-            IgnoreMatcher::new(&source, hide_git, hide_gitignore, OsStr::new(ignore_file));
+        let ignores = IgnoreMatcher::new(&source, config)?;
+        ignores.ensure_ignore_file(config, &source)?;
 
         Ok(Self {
             source,
@@ -656,13 +650,27 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::tempdir;
 
+    fn test_config(ignore_file: Option<&'static str>, require: bool) -> IgnoreConfig<'static> {
+        IgnoreConfig {
+            hide_git: false,
+            hide_gitignore: false,
+            ignore_file_name: ignore_file.map(OsStr::new),
+            require_ignore_file: require,
+            exclude: &[],
+            include: &[],
+        }
+    }
+
     #[test]
     fn new_returns_error_for_nonexistent_source() {
         let dir = tempdir().unwrap();
         let missing = dir.path().join("does_not_exist");
 
-        let result =
-            GitignoreMirrorFs::new(&missing, Duration::from_secs(1), false, false, ".gitignore");
+        let result = GitignoreMirrorFs::new(
+            &missing,
+            Duration::from_secs(1),
+            &test_config(Some(".gitignore"), false),
+        );
 
         assert!(result.is_err(), "expected Err for non-existent source");
     }
@@ -674,9 +682,34 @@ mod tests {
         let result = GitignoreMirrorFs::new(
             dir.path(),
             Duration::from_secs(1),
-            false,
-            false,
-            ".gitignore",
+            &test_config(Some(".gitignore"), false),
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn new_errors_when_required_ignore_file_missing() {
+        let dir = tempdir().unwrap();
+
+        let result = GitignoreMirrorFs::new(
+            dir.path(),
+            Duration::from_secs(1),
+            &test_config(Some(".dockerignore"), true),
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn new_succeeds_when_required_ignore_file_present() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".dockerignore"), "*.log\n").unwrap();
+
+        let result = GitignoreMirrorFs::new(
+            dir.path(),
+            Duration::from_secs(1),
+            &test_config(Some(".dockerignore"), true),
         );
 
         assert!(result.is_ok());
