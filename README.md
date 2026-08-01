@@ -45,7 +45,7 @@ clean-mount open /path/to/project
 ## Subcommands
 
 | Subcommand | What it does |
-|---|---|---|
+|---|---|
 | `mount SOURCE [MOUNTPOINT]` | Mount (omit mountpoint for auto temp dir + print path). Use `--daemon` to run in background. |
 | `status` | List active daemon mounts (PID, source, mountpoint, uptime) |
 | `stop --pid <PID>` / `stop <MOUNTPOINT>` | Unmount a running daemon mount by PID or mountpoint |
